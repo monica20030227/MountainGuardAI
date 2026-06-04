@@ -29,42 +29,70 @@ ROLE_LABELS = {
 }
 
 # =========================================================
-# 整合政府 Open Data：農業部土石流警戒 API
+# 整合政府 Open Data：農業部水保署土石流警戒 API (升級防呆版)
 # =========================================================
-@st.cache_data(ttl=300)  # 設定 5 分鐘快取，避免頻繁請求 API 導致延遲或被阻擋
+@st.cache_data(ttl=300)
 def fetch_nantou_debris_warnings():
-    # 農業部土石流警戒發布資料 API 端點
-    api_url = "https://data.moa.gov.tw/Service/OpenData/FromM/DebrisAlert.aspx"
+    # 嘗試農業部新版 OpenAPI 與備用舊版端點
+    api_url_v1 = "https://data.moa.gov.tw/api/v1/DebrisAlert"
+    api_url_legacy = "https://data.moa.gov.tw/Service/OpenData/FromM/DebrisAlert.aspx"
+    
+    # 💡 關鍵：加入 User-Agent 偽裝成瀏覽器，避免被政府防火牆阻擋 (HTTP 403)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+    }
     
     try:
-        response = requests.get(api_url, timeout=10)
+        # 先嘗試新版 API
+        response = requests.get(api_url_v1, headers=headers, timeout=10)
+        
+        # 若新版端點無效，切換至備用端點
+        if response.status_code != 200:
+            response = requests.get(api_url_legacy, headers=headers, timeout=10)
+            
         if response.status_code == 200:
             data = response.json()
             
-            # 若資料包在特定 key 內，進行安全提取 (確保支援不同回傳格式)
-            items = data if isinstance(data, list) else data.get("Result", [])
+            # 💡 寬鬆解析不同回傳格式 (針對不同 API 端點的 JSON 結構)
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                items = data.get("Data") or data.get("Result") or []
+            else:
+                items = []
+                
+            # 精準過濾出「南投縣」的警戒紀錄 (將整個 item 轉字串，確保涵蓋任何欄位)
+            nantou_warnings = [item for item in items if "南投縣" in str(item)]
             
-            # 精準過濾出「南投縣」的警戒紀錄
-            nantou_warnings = [item for item in items if "南投縣" in str(item.get("County", ""))]
+            # 統計紅、黃色警戒數量
+            red_alerts = sum(1 for item in nantou_warnings if "紅" in str(item))
+            yellow_alerts = sum(1 for item in nantou_warnings if "黃" in str(item))
             
-            # 統計紅、黃色警戒數量 (加入欄位大小寫的容錯處理)
-            red_alerts = sum(1 for item in nantou_warnings if "紅" in str(item.get("Alert_type", "") + item.get("AlertType", "")))
-            yellow_alerts = sum(1 for item in nantou_warnings if "黃" in str(item.get("Alert_type", "") + item.get("AlertType", "")))
-            
-            # 提取受影響的鄉鎮並去重
-            affected_towns = list(set([item.get("Town") for item in nantou_warnings if item.get("Town")]))
+            # 提取受影響的鄉鎮並去重 (容錯處理不同欄位命名)
+            affected_towns = []
+            for item in nantou_warnings:
+                town = item.get("Town") or item.get("Township") or item.get("TownName") or item.get("town")
+                if town:
+                    affected_towns.append(town)
+            affected_towns = list(set(affected_towns))
             
             return {
                 "total": len(nantou_warnings),
                 "red": red_alerts,
                 "yellow": yellow_alerts,
-                "towns": affected_towns
+                "towns": affected_towns,
+                "error": None
             }
+        else:
+            return {"error": f"伺服器錯誤 {response.status_code}"}
+            
+    except requests.exceptions.Timeout:
+        return {"error": "連線逾時"}
+    except requests.exceptions.RequestException as e:
+        return {"error": "網路請求異常"}
     except Exception as e:
-        pass # 實務上可寫入 Log，此處先略過以避免破壞 UI
-    
-    return None
-    
+        return {"error": f"解析異常: {str(e)[:15]}"}
+        
 # =========================================================
 # 1. 輔助函數 (Utils)
 # =========================================================
@@ -321,16 +349,19 @@ def page_gov_inbox():
         st.metric("🌧️ 氣象署 24H 累積雨量", "452 mm", "超大豪雨警戒", delta_color="inverse")
         
     with col_w2: 
-        if debris_data and debris_data["total"] > 0:
+        if debris_data and debris_data.get("error"):
+            # 發生連線或解析錯誤時，直接顯示原因
+            st.metric("⛰️ 水保署土石流潛勢", "無法取得即時資料", f"原因: {debris_data['error']}", delta_color="off")
+        elif debris_data and debris_data["total"] > 0:
+            # 成功取得資料且有警戒
             alert_text = f"{debris_data['total']} 條警戒 ({debris_data['red']}紅/{debris_data['yellow']}黃)"
-            # 將受影響鄉鎮串接顯示，過長則截斷
             towns_text = "、".join(debris_data["towns"][:3]) + ("..." if len(debris_data["towns"]) > 3 else "")
             st.metric("⛰️ 水保署土石流潛勢", alert_text, towns_text, delta_color="inverse")
         elif debris_data and debris_data["total"] == 0:
+            # 成功取得資料，但今天是好天氣無警戒
             st.metric("⛰️ 水保署土石流潛勢", "0 條警戒", "目前南投縣安全", delta_color="normal")
         else:
-            st.metric("⛰️ 水保署土石流潛勢", "連線異常或無資料", "請稍後重試", delta_color="off")
-            
+            st.metric("⛰️ 水保署土石流潛勢", "系統載入中...", "", delta_color="off")
     with col_w3: 
         st.metric("🚧 公路局省道災阻", "3 處完全中斷", "台14線、台21線", delta_color="inverse")
 
