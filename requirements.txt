@@ -1,0 +1,8 @@
+streamlit>=1.31.0         # 系統前端 UI 與網頁應用程式框架
+pandas>=2.0.0             # 戰備資源池資料處理與 DataFrame 轉換
+python-dotenv>=1.0.0      # 讀取 .env 檔案，安全管理 API Key
+openai>=1.12.0            # 呼叫 Groq Llama-3 模型的官方相容套件
+selenium>=4.18.0          # (若有保留) Threads 穿透式爬蟲與動態網頁渲染
+webdriver-manager>=4.0.1  # (若有保留) 自動管理與下載 Chrome WebDriver
+plotly>=5.18.0            # (若有保留) 戰情室視覺化動態圖表
+requests>=2.31.0          # 介接 TDX/公路總局等政府 Open Data API
