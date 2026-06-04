@@ -8,6 +8,8 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+import requests
+
 # =========================================================
 # 0. 環境變數與常數設定
 # =========================================================
@@ -26,6 +28,43 @@ ROLE_LABELS = {
     "admin": "系統管理員"
 }
 
+# =========================================================
+# 整合政府 Open Data：農業部土石流警戒 API
+# =========================================================
+@st.cache_data(ttl=300)  # 設定 5 分鐘快取，避免頻繁請求 API 導致延遲或被阻擋
+def fetch_nantou_debris_warnings():
+    # 農業部土石流警戒發布資料 API 端點
+    api_url = "https://data.moa.gov.tw/Service/OpenData/FromM/DebrisAlert.aspx"
+    
+    try:
+        response = requests.get(api_url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            
+            # 若資料包在特定 key 內，進行安全提取 (確保支援不同回傳格式)
+            items = data if isinstance(data, list) else data.get("Result", [])
+            
+            # 精準過濾出「南投縣」的警戒紀錄
+            nantou_warnings = [item for item in items if "南投縣" in str(item.get("County", ""))]
+            
+            # 統計紅、黃色警戒數量 (加入欄位大小寫的容錯處理)
+            red_alerts = sum(1 for item in nantou_warnings if "紅" in str(item.get("Alert_type", "") + item.get("AlertType", "")))
+            yellow_alerts = sum(1 for item in nantou_warnings if "黃" in str(item.get("Alert_type", "") + item.get("AlertType", "")))
+            
+            # 提取受影響的鄉鎮並去重
+            affected_towns = list(set([item.get("Town") for item in nantou_warnings if item.get("Town")]))
+            
+            return {
+                "total": len(nantou_warnings),
+                "red": red_alerts,
+                "yellow": yellow_alerts,
+                "towns": affected_towns
+            }
+    except Exception as e:
+        pass # 實務上可寫入 Log，此處先略過以避免破壞 UI
+    
+    return None
+    
 # =========================================================
 # 1. 輔助函數 (Utils)
 # =========================================================
@@ -267,11 +306,33 @@ def page_gov_inbox():
     st.title(f"📊 {user.get('district')} - 智慧決策儀表板")
     st.caption(" MountainGuard AI 結合環境感測與大數據，提供山區災害風險分級與資源缺口分析。")
 
-    st.subheader("📡 環境感測與風險評估模組 (Open Data)")
+    # ==========================================
+    # 模組一：風險評估與 Open Data 即時串接
+    # ==========================================
+    st.subheader("📡 環境感測與風險評估模組 (Open Data 即時串接)")
+    
+    # 呼叫 API 抓取南投縣即時警戒資料，並搭配載入動畫
+    with st.spinner("正在同步農業部土石流警戒資料..."):
+        debris_data = fetch_nantou_debris_warnings()
+
     col_w1, col_w2, col_w3 = st.columns(3)
-    with col_w1: st.metric("🌧️ 氣象署 24H 累積雨量", "452 mm", "超大豪雨警戒", delta_color="inverse")
-    with col_w2: st.metric("⛰️ 水保署土石流潛勢", "12 條紅黃色警戒", "仁愛鄉、信義鄉", delta_color="inverse")
-    with col_w3: st.metric("🚧 公路局省道災阻", "3 處完全中斷", "台14線、台21線", delta_color="inverse")
+    with col_w1: 
+        # 未來亦可將氣象署的累積雨量 API 依此邏輯替換
+        st.metric("🌧️ 氣象署 24H 累積雨量", "452 mm", "超大豪雨警戒", delta_color="inverse")
+        
+    with col_w2: 
+        if debris_data and debris_data["total"] > 0:
+            alert_text = f"{debris_data['total']} 條警戒 ({debris_data['red']}紅/{debris_data['yellow']}黃)"
+            # 將受影響鄉鎮串接顯示，過長則截斷
+            towns_text = "、".join(debris_data["towns"][:3]) + ("..." if len(debris_data["towns"]) > 3 else "")
+            st.metric("⛰️ 水保署土石流潛勢", alert_text, towns_text, delta_color="inverse")
+        elif debris_data and debris_data["total"] == 0:
+            st.metric("⛰️ 水保署土石流潛勢", "0 條警戒", "目前南投縣安全", delta_color="normal")
+        else:
+            st.metric("⛰️ 水保署土石流潛勢", "連線異常或無資料", "請稍後重試", delta_color="off")
+            
+    with col_w3: 
+        st.metric("🚧 公路局省道災阻", "3 處完全中斷", "台14線、台21線", delta_color="inverse")
 
     st.divider()
 
