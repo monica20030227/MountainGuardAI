@@ -3,8 +3,7 @@
 
 ---
 
-## 平台連結：[https://source-972vyqx8wwbw55tgkiwycs.streamlit.app/#x-10
-](https://mountainguardai-jelswyqytqn4qtb8cemmut.streamlit.app/)
+## 平台連結：https://mountainguardai-jelswyqytqn4qtb8cemmut.streamlit.app/
 ---
 
 ## 作品概念
