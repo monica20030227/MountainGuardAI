@@ -537,7 +537,7 @@ def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"
             model_name = "meta-llama/llama-4-scout-17b-16e-instruct"
         else:
             messages.append({"role": "user", "content": str(raw_text)})
-            model_name = "llama-3.3-70b-versatile"
+            model_name = "openai/gpt-oss-120b"
             
         res = client.chat.completions.create(model=model_name, messages=messages, temperature=0.0)
         raw_output = res.choices[0].message.content
@@ -611,7 +611,7 @@ def simple_match_check(demand, supply, claim_qty):
         }}
         """
         res = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0
         )
@@ -1304,7 +1304,7 @@ def page_submit_supply():
                     try:
                         from openai import OpenAI
                         client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                        res = client.chat.completions.create(model="openai/gpt-oss-120b", messages=[{"role": "user", "content": prompt}], temperature=0.0)
                         raw_output = res.choices[0].message.content
                         start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
                         if start_idx != -1 and end_idx != -1:
@@ -2229,7 +2229,7 @@ def page_company_supply_chatbot():
                     try:
                         from openai import OpenAI
                         client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                        res = client.chat.completions.create(model="openai/gpt-oss-120b", messages=[{"role": "user", "content": prompt}], temperature=0.0)
                         raw_output = res.choices[0].message.content
                         start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
                         if start_idx != -1 and end_idx != -1:
@@ -2384,7 +2384,7 @@ def page_company_supply_center():
                     try:
                         from openai import OpenAI
                         client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                        res = client.chat.completions.create(model="openai/gpt-oss-120b", messages=[{"role": "user", "content": prompt}], temperature=0.0)
                         raw_output = res.choices[0].message.content
                         start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
                         if start_idx != -1 and end_idx != -1:
@@ -2513,7 +2513,7 @@ def page_company_claim_center():
                     try:
                         from openai import OpenAI
                         client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                        res = client.chat.completions.create(model="openai/gpt-oss-120b", messages=[{"role": "user", "content": prompt}], temperature=0.0)
                         raw_output = res.choices[0].message.content
                         start_idx, end_idx = raw_output.find("{"), raw_output.rfind("}")
                         filter_cond = json.loads(raw_output[start_idx:end_idx+1]) if start_idx != -1 else {"district": "", "item": ""}
@@ -3537,7 +3537,7 @@ def page_esg_dashboard():
             try:
                 from openai import OpenAI
                 client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-                res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.3)
+                res = client.chat.completions.create(model="openai/gpt-oss-120b", messages=[{"role": "user", "content": prompt}], temperature=0.3)
                 report_md = res.choices[0].message.content
                 st.success("🎉 專屬南投永續 ESG 報告草稿生成完畢！")
                 st.markdown(f"{report_md}")
