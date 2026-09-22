@@ -1969,36 +1969,74 @@ def page_chatbot():
     st.title("🌲 Mountain Guard AI | 山區韌性救援通報")
     st.info("📡 **弱網備援機制啟動**：若因南投山區基地台損毀導致連線不穩，請直接發送簡訊『地點+災情狀況+物資需求』至應變專線 `0911-RES-CUE`。")
     
-    uploaded_file = st.file_uploader(
-        "📸 附加現場災情照片 (選填)", 
-        type=["jpg", "jpeg", "png"], 
-        help="⚠️ 隱私與安全防護：請勿上傳包含清晰人臉或傷亡者遺體之照片，系統內建 DLP 將自動攔截並進行敏感遮蔽。"
-    )
-
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
+    # 1. 渲染歷史對話紀錄 (新增支援顯示剛上傳的圖片)
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
+            if msg.get("image"):
+                st.image(msg["image"], width=250)
             st.markdown(msg["content"])
             
-    if user_input := st.chat_input("輸入範例：仁愛鄉投83線土石流爆發道路中斷，部落形成孤島，約30人受困，急需2台發電機與口糧支援！"):
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+    # 2. 使用 st.form 打造整合型輸入區
+    st.markdown("---")
+    with st.container():
+        with st.form("chat_input_form", clear_on_submit=True):
+            col_img, col_text = st.columns([1, 3])
             
+            with col_img:
+                uploaded_file = st.file_uploader(
+                    "📸 照片", 
+                    type=["jpg", "jpeg", "png"], 
+                    label_visibility="collapsed",
+                    help="⚠️ 隱私與安全防護：請勿上傳包含清晰人臉或傷亡者遺體之照片，系統內建 DLP 將自動攔截並進行敏感遮蔽。"
+                )
+                
+            with col_text:
+                user_input = st.text_area(
+                    "輸入通報文字...", 
+                    height=68, 
+                    placeholder="輸入範例：仁愛鄉投83線土石流爆發道路中斷，部落形成孤島，約30人受困，急需2台發電機與口糧支援！", 
+                    label_visibility="collapsed"
+                )
+                
+            submitted = st.form_submit_button("🚀 送出通報", use_container_width=True)
+
+    # 3. 處理送出邏輯
+    if submitted:
+        if not user_input.strip() and not uploaded_file:
+            st.warning("請輸入通報文字或上傳照片後再送出！")
+            return
+            
+        img_bytes = uploaded_file.getvalue() if uploaded_file else None
+        mime_type = uploaded_file.type if uploaded_file else "image/jpeg"
+        user_msg_content = user_input if user_input.strip() else "*(僅上傳災情照片)*"
+
+        # 儲存到對話紀錄中
+        st.session_state.chat_history.append({"role": "user", "content": user_msg_content, "image": img_bytes})
+        
+        # 顯示使用者的對話框
+        with st.chat_message("user"):
+            if img_bytes:
+                st.image(img_bytes, width=250)
+            st.markdown(user_msg_content)
+            
+        # 開始執行原本的 AI 處理邏輯
         with st.chat_message("assistant"):
             with st.spinner("🧠 Mountain Guard AI 正在解析災害類型、受影響人數與推算地理座標..."):
-                img_bytes = uploaded_file.getvalue() if uploaded_file else None
-                mime_type = uploaded_file.type if uploaded_file else "image/jpeg"
                 
-                # 調用 AI 進行多模態災情分析
+                # ==========================================
+                # 以下完全保留您原本的 API 呼叫與資料處理邏輯
+                # ==========================================
                 result = extract_info_with_ai(raw_text=user_input, image_bytes=img_bytes, mime_type=mime_type)
                 
                 if result.get("error") == "API_RATE_LIMIT":
                     reply = "⚠️ **系統降級通知**：目前 AI 伺服器滿載。請點擊左側「📣 填寫需求表單」切換為純手動備援模式送出！"
                     st.warning(reply)
                     st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                    # 💡 注意：因為使用 form，這裡要用 rerun 來重整畫面
+                    st.rerun()
                     return
                 elif "error" in result:
                     reply = f"❌ **通報失敗**：系統解析發生錯誤 ({result['error']})，請稍後重試。"
@@ -2013,6 +2051,7 @@ def page_chatbot():
                     reply = "⚠️ **系統提示**：無法辨識出與南投山區災情或救援物資調度相關的內容。若是緊急求救，請具體說明『地點』與『現場災情狀況/受困人數/所需物資』。"
                     st.warning(reply)
                     st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                    st.rerun()
                     return
                     
                 item = extracted.get("item", "")
@@ -2021,7 +2060,7 @@ def page_chatbot():
                 resource_type = extracted.get("resource_type", "有形資源")
                 category = extracted.get("category", "未分類")
                 
-                try: lat = float(extracted.get("lat", 23.9))  # 以南投地理中心為預設值偏好
+                try: lat = float(extracted.get("lat", 23.9))
                 except: lat = 23.9
                 try: lon = float(extracted.get("lon", 120.9))
                 except: lon = 120.9
@@ -2030,9 +2069,7 @@ def page_chatbot():
                 if not district or district in ["未知", "無", ""]:
                     district = user.get("district", "南投縣全區")
                 
-                # ==========================================
-                # 💡 路由 1：純災情通報 (進入決策儀表板與風險評估)
-                # ==========================================
+                # 💡 路由 1：純災情通報
                 if "disaster" in info_type:
                     if "disasters" not in st.session_state: st.session_state.disasters = []
                     record = {
@@ -2048,9 +2085,7 @@ def page_chatbot():
                     reply = f"🚨 **山區災情已即時立案**！通報已標記於即時災情地圖，並同步送入「決策儀表板模組」進行風險分級與優先順序評估。\n*(AI 定位行政區：{district})*"
                     if risk_flag: reply += f"\n\n*(🛡️ 系統已自動啟動 DLP 遮蔽敏感內容)*"
 
-                # ==========================================
-                # 💡 路由 2：救援物資/車隊需求 (Demand)
-                # ==========================================
+                # 💡 路由 2：救援物資/車隊需求
                 elif "demand" in info_type:
                     if not item or item in ["未知", "無", ""]:
                         reply = "⚠️ **通報失敗**：無法辨識具體的救援需求品項。請重新輸入，例如：『我們需要 5 台抽水機與發電機』。"
@@ -2082,9 +2117,7 @@ def page_chatbot():
                             reply = f"✅ **物資需求立案成功**！已寫入 Mountain Guard AI 需求池：{item} x {qty}\n*(AI 定位：{district}，正透過智慧媒合模組推薦最佳配送方案)*"
                             if risk_flag: reply += f"\n\n*(🛡️ 系統已啟動 DLP 遮蔽敏感內容)*"
 
-                # ==========================================
-                # 💡 路由 3：民間/政府資源供給 (Supply)
-                # ==========================================
+                # 💡 路由 3：民間/政府資源供給
                 else:
                     record = {
                         "id": make_id("S"), "time": now_str(), "source": "AI語音文字通報",
@@ -2103,6 +2136,9 @@ def page_chatbot():
                 
             st.markdown(reply)
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
+            
+            # 使用 form 後，最後加入 st.rerun() 讓畫面更新，顯示剛上傳的對話框與清空表單
+            st.rerun()
 
 
 def page_company_supply_chatbot():
