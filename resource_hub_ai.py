@@ -534,7 +534,7 @@ def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"
         if image_bytes:
             base64_image = base64.b64encode(image_bytes).decode('utf-8')
             messages.append({"role": "user", "content": [{"type": "text", "text": str(raw_text)}, {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}}]})
-            model_name = "meta-llama/llama-4-scout-17b-16e-instruct"
+            model_name = "openai/gpt-oss-120b"
         else:
             messages.append({"role": "user", "content": str(raw_text)})
             model_name = "openai/gpt-oss-120b"
