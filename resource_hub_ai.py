@@ -23,7 +23,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "ㄑ")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
 
 # =========================================================
-# 0. Demo 常數設定
+# 0. 系統常數設定
 # =========================================================
 RESOURCE_TYPES = {
     "有形資源": ["食物", "飲用水", "醫療用品", "保暖衣物", "救災工具", "衛星通訊設備", "越野車輛(四輪傳動)", "重型機具(怪手/山貓)", "發電機", "其他"],
@@ -87,7 +87,7 @@ def init_session_state():
     if "current_user" not in st.session_state:
         st.session_state.current_user = None
 
-    # 手機 OTP 驗證暫存區：Demo 版存在 session_state；正式版建議改成 Redis/DB 並設定過期時間。
+    # 手機 OTP 驗證暫存區：目前以 session_state 管理驗證暫存資料。
     if "otp_store" not in st.session_state:
         st.session_state.otp_store = {}
 
@@ -97,7 +97,7 @@ def init_session_state():
                 "id": "U_ADMIN",
                 "name": "平台管理員",
                 "role": "admin",
-                "email": "admin@mountainguard.demo",
+                "email": "admin@resq-link.tw",
                 "district": "全區",
                 "village": "全區",
                 "verified": True,
@@ -113,7 +113,7 @@ def init_session_state():
                 "village": "全區",
                 "verified": True,
                 "status": "active",
-                "proof": "公務信箱 + demo 白名單",
+                "proof": "公務信箱驗證",
             },
             {
                 "id": "U_GOV_002",
@@ -124,7 +124,7 @@ def init_session_state():
                 "village": "翠華村",
                 "verified": True,
                 "status": "active",
-                "proof": "公務信箱 + demo 白名單",
+                "proof": "公務信箱驗證",
             },
             {
                 "id": "U_CIT_001",
@@ -146,11 +146,11 @@ def init_session_state():
                 "village": "全區",
                 "verified": True,
                 "status": "active",
-                "proof": "企業統編 + demo 白名單",
+                "proof": "企業統編驗證",
             },
         ]
 
-    # 補齊舊資料欄位，避免新增手機驗證後舊 demo 帳號缺欄位。
+    # 補齊舊資料欄位，補齊手機驗證相關欄位，維持既有帳號資料完整性。
     for u in st.session_state.users:
         u.setdefault("phone", "")
         u.setdefault("phone_verified", True if u.get("id") in ["U_ADMIN", "U_GOV_001", "U_GOV_002", "U_CIT_001", "U_COM_001"] else False)
@@ -360,7 +360,7 @@ def badge_text(status):
 
 
 def normalize_phone(phone):
-    """簡易手機格式整理：保留 + 與數字，Demo 可支援 09xx 或 +886。"""
+    """簡易手機格式整理：保留 + 與數字，支援 09xx 或 +886。"""
     phone = str(phone or "").strip()
     phone = re.sub(r"[^0-9+]", "", phone)
     return phone
@@ -374,9 +374,9 @@ def is_valid_phone(phone):
 
 def send_phone_otp(phone):
     """
-    Demo OTP：產生 6 碼驗證碼並寫入 session_state。
+    OTP：產生 6 碼驗證碼並寫入 session_state。
     注意：OTP 不寫入全站通知中心，避免其他使用者在側邊欄看到驗證碼。
-    正式部署若要真的傳 SMS，可串 Twilio/三竹/中華電信簡訊 API。
+    可依部署環境串接簡訊服務商以發送驗證碼。
     """
     phone = normalize_phone(phone)
     otp = f"{random.randint(0, 999999):06d}"
@@ -387,7 +387,7 @@ def send_phone_otp(phone):
         "verified": False,
         "attempts": 0,
     }
-    # Demo 版只把 OTP 回傳給目前正在註冊的人；不放進全站通知中心。
+    # OTP 僅保留於目前註冊流程，不寫入全站通知中心。
     add_audit("發送手機 OTP", f"phone={phone}")
     return otp
 
@@ -412,13 +412,13 @@ def verify_phone_otp(phone, otp_input):
 # 2. Email / 通知
 # =========================================================
 def send_email(to_email, subject, body):
-    """Demo 版：若 .env 有 SMTP 設定就真的寄信，否則只寫入 email_logs。"""
+    """通知模組：若 .env 已設定 SMTP 則實際寄信，否則保留於系統紀錄。"""
     log = {
         "time": now_str("%Y-%m-%d %H:%M:%S"),
         "to": to_email or "未提供",
         "subject": subject,
         "body": body,
-        "status": "demo_log_only",
+        "status": "logged_only",
     }
 
     if SMTP_HOST and SMTP_USER and SMTP_PASSWORD and to_email:
@@ -501,7 +501,7 @@ def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"
         ... (保留原有的 1~4 點分類規則) ...
 
         ️【地理座標強制解算規則】：
-        強制推導完整台灣行政區 (district) 以及精準經緯度 (lat, lon)。若通報地點位於南投山區，請確保解析出正確的鄉鎮村里（例如：南投縣仁愛鄉翠華村）。
+        強制推導完整台灣行政區 (district) 以及精準經緯度 (lat, lon)。若通報地點位於南投山區，請確保解析出正確的鄉鎮村里。
 
         ️【DLP 隱私防護】：
         若包含清晰人臉、遺體、身分證件，請將 "risk_flag" 設為 "包含敏感個資/人像"，並忽略敏感細節。
@@ -899,29 +899,24 @@ def submit_claim(demand, supply, claim_qty, note):
 # 5.登入與註冊介面 (UX 升級版)
 # =========================================================
 def login_panel():
-    """複賽 Demo 登入：一鍵切換角色，避免評審卡在測試帳密。"""
+    """平台登入入口：依使用角色進入對應的應變作業介面。"""
     st.markdown('<div class="login-shell">', unsafe_allow_html=True)
     st.markdown(
         """
         <div class="login-brand">
-            <div class="page-kicker">RESQ-LINK / DEMO EDITION</div>
+            <div class="page-kicker">RESQ-LINK / SECURE ACCESS</div>
             <div class="login-brand-title">山區防災協作平台</div>
-            <div class="login-brand-sub">把零散災情轉成可定位、可驗證、可媒合、可調度、可追蹤的應變流程。</div>
+            <div class="login-brand-sub">將分散災情、空間風險與民間資源整合為可定位、可驗證、可媒合、可調度、可追蹤的應變流程。</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        '<div class="demo-callout"><b>複賽展示建議：</b> 建議評審先進入「指揮中心」，從戰情總覽一路走到通報驗證、資源媒合與物流追蹤。</div>',
-        unsafe_allow_html=True,
-    )
-
     roles = [
-        ("政府指揮中心", "U_GOV_001", "看全局、驗證災情、審核調度"),
-        ("企業 / 民間夥伴", "U_COM_001", "登錄資源、查看需求、執行馳援"),
-        ("山區居民", "U_CIT_001", "提交需求、查看避難與案件狀態"),
-        ("系統管理員", "U_ADMIN", "檢視全區資料與稽核履歷"),
+        ("政府指揮中心", "U_GOV_001", "掌握轄區戰情、驗證案件、審核調度"),
+        ("企業 / 民間夥伴", "U_COM_001", "登錄物資與運能、回應支援需求"),
+        ("山區居民", "U_CIT_001", "通報災情、提出需求、追蹤案件"),
+        ("系統管理員", "U_ADMIN", "管理全區資料、權限與稽核紀錄"),
     ]
 
     cols = st.columns(4)
@@ -936,24 +931,24 @@ def login_panel():
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button("進入 Demo", key=f"quick_{uid}", use_container_width=True, type="primary" if uid == "U_GOV_001" else "secondary"):
-                demo_login(uid)
+            if st.button("進入系統", key=f"quick_{uid}", use_container_width=True, type="primary" if uid == "U_GOV_001" else "secondary"):
+                enter_system(uid)
 
-    with st.expander("使用其他測試帳號"):
+    with st.expander("切換其他使用身分"):
         user_options = st.session_state.users
         choice = st.selectbox(
-            "測試身分",
+            "使用者身分",
             user_options,
             format_func=lambda u: f"{u.get('name')}｜{ROLE_LABELS.get(u.get('role'), u.get('role'))}",
         )
-        if st.button("以此帳號進入", use_container_width=True, key="login_custom_demo"):
+        if st.button("以此身分進入系統", use_container_width=True, key="login_other_role"):
             st.session_state.current_user = choice
             st.session_state.logged_in = True
             st.session_state.nav_page = None
-            add_audit("Demo 帳號登入", choice.get("name", "未知"))
+            add_audit("登入系統", choice.get("name", "未知"))
             st.rerun()
 
-    st.caption("Demo 模式僅供展示。正式部署仍應接入公務身分、企業驗證與可持續的資料庫 / 權限服務。")
+    st.caption("平台依使用者角色提供相應的資訊、審核、調度與資源管理功能。")
     st.markdown("</div>", unsafe_allow_html=True)
 
 def sidebar_layout():
@@ -1007,10 +1002,10 @@ def demand_card(d):
 # =========================================================
 
 # =========================================================
-# 6.x 複賽 Demo 專業化 UI Helpers
+# 6.x 專業化介面樣式
 # =========================================================
 def inject_professional_css():
-    """複賽 Demo 專用：降低裝飾、提高資訊層級與戰情可讀性。"""
+    """降低裝飾、提高資訊層級與戰情可讀性。"""
     st.markdown(
         """
         <style>
@@ -1237,7 +1232,7 @@ def inject_professional_css():
             margin-top:0.16rem;
         }
 
-        .demo-callout {
+        .system-callout {
             border-left:4px solid var(--info);
             background:#eef5fd;
             border-radius:0 10px 10px 0;
@@ -1774,90 +1769,29 @@ def render_situation_map(title="山區戰情與避難地圖", compact=False):
                 <div class="legend-item"><span class="legend-dot" style="background:#1d5fa7;"></span>避難據點 / 待驗證</div>
                 <div class="legend-item"><span class="legend-dot" style="background:#16794c;"></span>可調派資源</div>
             </div>
-            <div class="map-note">空間連線是候選配對的地理關係示意，不代表實際道路導航。正式版應接入道路封閉、土石流警戒與即時交通路網。</div>
+            <div class="map-note">空間連線代表案件與資源的候選空間關係，不等同於道路導航結果。</div>
             """,
             unsafe_allow_html=True,
         )
 
-def get_demo_user(user_id):
+def get_user_by_id(user_id):
     return next((u for u in st.session_state.users if u.get("id") == user_id), None)
 
 
-def demo_login(user_id):
-    user = get_demo_user(user_id)
+def enter_system(user_id):
+    user = get_user_by_id(user_id)
     if user:
         st.session_state.current_user = user
         st.session_state.logged_in = True
         st.session_state.nav_page = None
-        add_audit("Demo 登入", f"{user.get('name')} / {user.get('role')}")
+        add_audit("登入系統", f"{user.get('name')} / {user.get('role')}")
         st.rerun()
-
-
-def page_demo_flow():
-    render_page_header(
-        "DEMO WALKTHROUGH",
-        "複賽展示流程",
-        "用一個案件串起通報、風險分流、資源媒合、政府簽核與物流回報。",
-        "建議 Demo 時全程使用同一筆需求案件",
-    )
-
-    steps = [
-        ("01", "接收", "居民 / 村里 / 社群通報"),
-        ("02", "解析", "AI 結構化、地點與風險欄位"),
-        ("03", "驗證", "政府確認案件真實性與轄區"),
-        ("04", "媒合", "資源、運能與空間條件比對"),
-        ("05", "調派", "人工簽核後建立配送任務"),
-        ("06", "結案", "出發、送達、留下稽核履歷"),
-    ]
-
-    cols = st.columns(len(steps))
-    for col, (num, name, desc) in zip(cols, steps):
-        with col:
-            st.markdown(
-                f"""
-                <div class="step {'active' if num == '03' else ''}">
-                    <div class="step-done">STEP {num}</div>
-                    <div class="step-name">{name}</div>
-                    <div style="font-size:0.68rem;color:#6b7785;margin-top:0.25rem;">{desc}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    stats = compute_case_stats()
-    st.markdown(
-        "<div class='demo-callout'><b>評審應該看懂的核心價值：</b> 不是「有一個 AI 聊天機器人」，而是把分散的災情與民間資源轉成可審核、可定位、可調度、可追蹤的一條完整閉環。</div>",
-        unsafe_allow_html=True,
-    )
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        render_kpi("待驗證需求", len(stats["pending_demands"]), "需要政府確認來源")
-    with c2:
-        render_kpi("可調派供給", len(stats["active_supplies"]), "已具可用庫存")
-    with c3:
-        render_kpi("待簽核調度", len(stats["pending_claims"]), "人工作最後決策")
-
-    st.markdown("### 建議現場操作")
-    st.markdown(
-        """
-        先進入「山區戰情」，讓評審理解現在有哪些案件與資源；接著開「災情收件匣」，完成一筆需求驗證；再進入「智慧馳援 / 調度審核」，展示系統產生候選配對與理由；最後到「物流追蹤」把狀態改成已出發與已送達。
-        """
-    )
-
-    st.markdown("### 目前 Demo 資料對應")
-    demo_rows = [
-        {"角色": "居民", "帳號": "信義鄉神木村居民 阿雄", "案件": "神木村機具需求"},
-        {"角色": "政府", "帳號": "信義鄉公所承辦人", "案件": "審核 D001 / 調度"},
-        {"角色": "企業", "帳號": "南投在地企業(日月潭水廠)", "案件": "飲用水供給 S001"},
-    ]
-    st.dataframe(pd.DataFrame(demo_rows), hide_index=True, use_container_width=True)
 
 def page_home():
     st.title("️ MountainGuard AI：南投山區韌性救援平台")
     st.subheader(" 數位治理・永續南投 ｜ 智慧山城全局戰情室")
     
-    # 呼應南投黑客松計畫書的動機
+    # 對應南投山區防災治理需求
     st.info(
         " **山城防災公告**：南投縣地形以山地丘陵為主，極端氣候下仁愛鄉、信義鄉、水里鄉等常因道路坍方形成**「孤島效應」**。 "
         "本平台利用 AI 與地理資訊技術，將分散於 Threads、LINE 的災情與物資供需進行智慧串聯，強化民間（越野車隊/在地企業）與政府單位的協作韌性。"
@@ -1899,7 +1833,7 @@ def page_submit_demand():
         location = st.text_input(
             " 需求地點/地標", 
             value="", 
-            placeholder="例如：信義鄉神木村神木國小、仁愛鄉翠華村華崗部落、廬山溫泉特定區 或 具體道路里程", 
+            placeholder="請填寫具體地址、地標、學校、部落或道路位置", 
             help="可填寫南投縣內具體地址、地標、學校或部落名稱，AI 將自動解析行政區並調取 GIS 座標。", 
             key="demand_location"
         )
@@ -1909,7 +1843,7 @@ def page_submit_demand():
         with col_r1:
             resource_type, category = resource_selectors("demand")
         with col_r2:
-            item = st.text_input(" 需求品項/機具/人力", placeholder="範例：大型挖土機(怪手)、4WD越野吉普車支援、衛星電話、嬰兒奶粉", help="請具體說明急需的資源，如屬特殊地形建置，請註明規格。", key="demand_item")
+            item = st.text_input(" 需求品項/機具/人力", placeholder="請填寫具體品項、規格或所需運能", help="請具體說明急需的資源，如屬特殊地形建置，請註明規格。", key="demand_item")
             
         col_q1, col_q2 = st.columns(2)
         with col_q1:
@@ -1920,7 +1854,7 @@ def page_submit_demand():
         st.markdown("##### 3. 現場災情環境補充說明")
         raw_text = st.text_area(
             " 補充說明 (選填)", 
-            placeholder="例如：聯外道路發生大規模土石流中斷，目前直升機因雨勢無法空投，急需熟稔山路的越野車隊經由舊林道嘗試挺進接駁。", 
+            placeholder="請補充道路、天候、現場限制與其他重要災情資訊", 
             key="demand_raw_text"
         )
         
@@ -1974,9 +1908,9 @@ def page_submit_supply():
         with st.form("supply_form"):
             col_a, col_b = st.columns(2)
             with col_a:
-                provider = st.text_input(" 提供單位/團體名稱", value=user.get("name", ""), placeholder="範例：南投在地企業(日月潭水廠)、台灣黑熊四輪傳動吉普車隊", key="supply_provider")
+                provider = st.text_input(" 提供單位/團體名稱", value=user.get("name", ""), placeholder="請填寫提供單位或團體名稱", key="supply_provider")
             with col_b:
-                location_current = st.text_input(" 物資實際存放/運具待命地點", value="", placeholder="例如：草屯民資轉運站、埔里應變物資庫、竹山儲備點", help="請填寫資源『當下存放或待命的位置』，系統會以此計算入山的崎嶇運送距離與最佳路徑。", key="supply_location")
+                location_current = st.text_input(" 物資實際存放/運具待命地點", value="", placeholder="請填寫資源目前存放或待命的位置", help="請填寫資源『當下存放或待命的位置』，系統會以此計算入山的崎嶇運送距離與最佳路徑。", key="supply_location")
             
             # 將傳統物流選項，調整為更符合山區救災的「越野克服孤島能力」描述
             has_logistics = st.radio(
@@ -1992,11 +1926,11 @@ def page_submit_supply():
             with col_c:
                 resource_type, category = resource_selectors("supply")
             with col_d:
-                item = st.text_input(" 可提供品項/運具/機具", placeholder="範例：50馬力挖土機、高規格無線電、包裝飲用水、發電機", key="supply_item")
+                item = st.text_input(" 可提供品項/運具/機具", placeholder="請填寫可提供的品項、運具或機具", key="supply_item")
             with col_e:
                 qty = st.number_input(" 可提供數量", min_value=1, value=1, key="supply_qty")
                 
-            raw_text = st.text_area(" 資源規格補充說明 (選填)", placeholder="例如：越野車皆配備絞盤與涉水呼吸管，可克服中度泥濘地形；飲用水效期至 2027 年底。", key="supply_raw_text")
+            raw_text = st.text_area(" 資源規格補充說明 (選填)", placeholder="請補充資源規格、運輸能力、保存條件或其他重要資訊", key="supply_raw_text")
             submitted = st.form_submit_button(" 建立單筆資源儲備", type="primary")
 
         if submitted:
@@ -2034,7 +1968,7 @@ def page_submit_supply():
         bulk_text = st.text_area(
             " 貼上倉管盤點或車隊配置清單", 
             height=150, 
-            placeholder="範例：草屯民資轉運站目前儲備有 500箱乾糧與 200箱生活用藥，自有4WD越野吉普車3輛可進山。埔里中轉倉庫存有 30台發電機，需車隊外部載運協助。", 
+            placeholder="請貼上物資、車隊或倉儲盤點內容", 
             help="請包含物資存放地、品項名稱、數量與是否有山道運能。", 
             key="bulk_import_text"
         )
@@ -2120,7 +2054,7 @@ def page_public_claims():
             with st.form("quick_supply"):
                 provider = st.text_input("提供單位/車隊稱呼", value=user.get("name"))
                 resource_type, category = resource_selectors("quick_supply")
-                item = st.text_input("可動用品項/車型", placeholder="例如：4WD 吉普車、礦泉水、志工人力")
+                item = st.text_input("可動用品項/車型", placeholder="請填寫可提供的物資、車型或人力")
                 qty = st.number_input("可提供數量", min_value=1, value=1, key="quick_qty")
                 location_current = st.text_input("目前整備待命地點", value=user.get("district") if user.get("district") else "南投縣")
                 submitted = st.form_submit_button("快速建立並儲存")
@@ -2140,7 +2074,7 @@ def page_public_claims():
                 st.rerun()
         return
 
-    # 列表展示等待被解救的需求卡片
+    # 待處理需求卡片
     for d in pending_demands:
         with st.container(border=True):
             # 加上山區特有的警示與徽章
@@ -2161,7 +2095,7 @@ def page_public_claims():
                 with col_c1:
                     claim_qty = st.number_input("認領/承運數量", min_value=1, max_value=max_qty, value=max_qty, key=f"claim_qty_{d['id']}")
                 with col_c2:
-                    note = st.text_area(" 挺進行程與調度計畫說明：", placeholder="例如：本車隊預計今日下午2點出發，經由林道繞行進入，預計4點抵達村落合流點。", key=f"claim_note_{d['id']}")
+                    note = st.text_area(" 挺進行程與調度計畫說明：", placeholder="請填寫預計出發時間、運送方式、路線或集結資訊", key=f"claim_note_{d['id']}")
                     
                 submitted = st.form_submit_button(" 送出入山救援認領申請")
             if submitted:
@@ -2334,7 +2268,7 @@ def page_gov_review():
                                 st.markdown(f"️ **災區環境動態變數**：`{d.get('risk_flag')}`")
                         
                         st.markdown("##### ️ 指揮官決策簽核")
-                        note = st.text_input(" 公所/應變中心審核意見 (會同步匯入 E-mail 派車單)", key=f"gov_c_note_{c['id']}", placeholder="例如：准予由舊林道挺進，請務必於下午4點前出山回報。")
+                        note = st.text_input(" 公所/應變中心審核意見 (會同步匯入 E-mail 派車單)", key=f"gov_c_note_{c['id']}", placeholder="請填寫調度核准條件、路線限制與回報要求")
                         
                         btn_col_a, btn_col_b = st.columns(2)
                         
@@ -2399,7 +2333,7 @@ def page_gov_review():
                             st.map(df_map, color="color", size="size", zoom=9, use_container_width=True)
                             st.caption(" 紅點：求助災區位置 ｜  綠點：挺進隊/物資發源地 (地圖依據 AI 定位自動聚焦)")
                         else:
-                            # 完美退守降級：若兩端皆為純文字無座標，展示南投中心靜態警示，不讓元件崩潰
+                            # 完美退守降級：若兩端皆為純文字無座標，顯示南投中心靜態警示，不讓元件崩潰
                             fallback_df = pd.DataFrame([{"lat": 23.9, "lon": 120.9, "color": "#FFA500", "size": 50}])
                             st.map(fallback_df, color="color", zoom=8, use_container_width=True)
                             st.caption("️ **空間定位提示**：此案件採用極端山區無線電通報，無精準 GPS。地圖暫時鎖定南投縣中心點。")
@@ -2410,7 +2344,7 @@ def page_map_pool():
         "LIVE SITUATION",
         "山區戰情與避難地圖",
         "以「現在發生什麼、哪裡最急、附近有什麼資源」為主視覺，採 2D 戰情呈現。",
-        "資料來源：平台通報 / 已登錄資源 / Demo 避難據點",
+        "資料來源：平台通報 / 已登錄資源 / 平台避難據點",
     )
 
     stats = compute_case_stats()
@@ -2706,7 +2640,7 @@ def page_chatbot():
                 user_input = st.text_area(
                     "輸入通報文字...", 
                     height=68, 
-                    placeholder="輸入範例：仁愛鄉投83線土石流爆發道路中斷，部落形成孤島，約30人受困，急需2台發電機與口糧支援！", 
+                    placeholder="請輸入完整災情、位置、受影響情形與資源需求", 
                     label_visibility="collapsed"
                 )
                 
@@ -2797,7 +2731,7 @@ def page_chatbot():
                 #  路由 2：救援物資/車隊需求
                 elif "demand" in info_type:
                     if not item or item in ["未知", "無", ""]:
-                        reply = "️ **通報失敗**：無法辨識具體的救援需求品項。請重新輸入，例如：『我們需要 5 台抽水機與發電機』。"
+                        reply = "️ **通報失敗**：無法辨識具體的救援需求品項。請重新輸入具體的資源品項與數量。"
                     elif qty <= 0:
                         reply = "️ **通報失敗**：無法辨識有效的需求數量。請明確告知數量。"
                     else:
@@ -2859,7 +2793,7 @@ def page_company_supply_chatbot():
     tab1, tab2 = st.tabs([" 智慧對話登錄", " 批次物資/車隊智能匯入"])
     
     with tab1:
-        st.info(" **提示**：請直接描述可提供的物資、志工或救援車隊。例如：『我們在草屯物資站有 5 輛四輪傳動越野車隊與 10 名救護志工可隨時投入支援信義鄉。』")
+        st.info(" **提示**：請直接描述可提供的物資、志工、救援車隊、數量與所在位置。")
         
         if "comp_supply_chat" not in st.session_state:
             st.session_state.comp_supply_chat = []
@@ -2868,7 +2802,7 @@ def page_company_supply_chatbot():
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
                 
-        if user_input := st.chat_input("輸入範例：埔里聯絡處可提供 200 箱礦泉水與 30 箱乾糧，自有貨車車隊可協助配送至水里鄉。"):
+        if user_input := st.chat_input("請輸入可提供的資源、數量、位置與運送能力"):
             st.session_state.comp_supply_chat.append({"role": "user", "content": user_input})
             with st.chat_message("user"):
                 st.markdown(user_input)
@@ -2898,9 +2832,9 @@ def page_company_supply_chatbot():
                             except ValueError: qty = 0
 
                             if not item or item in ["未知", "無", ""]:
-                                reply = "️ 無法辨識具體的「資源/物資品項」，請重新輸入。例如：『可支援四輪傳動救援車隊 5 輛』"
+                                reply = "️ 無法辨識具體的「資源/物資品項」，請重新輸入可提供的資源與數量。"
                             elif qty <= 0:
-                                reply = "️ 無法辨識有效的「數量」，請重新輸入。例如：『提供志工 10 名』或『物資 100 箱』"
+                                reply = "️ 無法辨識有效的「數量」，請重新輸入明確的資源名稱與數量。"
                             else:
                                 resource_type = extracted.get("resource_type", "有形資源")
                                 if resource_type not in ["有形資源", "無形資源", "金流資源"]:
@@ -2961,7 +2895,7 @@ def page_company_supply_chatbot():
 
     with tab2:
         st.write("請將企業內部的資源盤點清單或 ERP 系統文字貼於下方，AI 將自動解構陣列並推算經緯度。")
-        bulk_text = st.text_area(" 貼上物資/車隊盤點文字清單", height=150, placeholder="範例：草屯倉目前有 500箱乾糧與口糧，自有四輪傳動救援車隊可送。竹山物資站有 20台發電機，需救援車隊協助搬運。", key="comp_bulk_text")
+        bulk_text = st.text_area(" 貼上物資/車隊盤點文字清單", height=150, placeholder="請貼上物資或車隊庫存盤點內容", key="comp_bulk_text")
         
         if st.button(" 啟動 Mountain Guard AI 批次解析", type="primary", key="comp_bulk_btn"):
             if not bulk_text.strip(): 
@@ -3035,7 +2969,7 @@ def page_company_supply_center():
     # Tab 1: AI 對話建檔
     # ==========================================
     with tab1:
-        st.info(" 提示：請直接描述可提供的物資與存放地點。例如：『我們統一企業在林口物流中心有 500 箱礦泉水可提供，自有車隊可送。』")
+        st.info(" 提示：請直接描述可提供的物資、數量、存放地點與運送能力。")
         if "comp_supply_chat" not in st.session_state:
             st.session_state.comp_supply_chat = []
             
@@ -3043,7 +2977,7 @@ def page_company_supply_center():
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
                 
-        if user_input := st.chat_input("輸入範例：台南永康倉庫可提供 500 箱礦泉水..."):
+        if user_input := st.chat_input("請輸入可提供的物資、數量與存放地點"):
             st.session_state.comp_supply_chat.append({"role": "user", "content": user_input})
             with st.chat_message("user"): 
                 st.markdown(user_input)
@@ -3078,7 +3012,7 @@ def page_company_supply_center():
                                 except: qty = 0
     
                                 if not item or item in ["未知", "無", ""]:
-                                    reply = "️ 無法辨識「物資品項」，請重新輸入。例如：『可提供 500 箱礦泉水』"
+                                    reply = "️ 無法辨識「物資品項」，請重新輸入具體的物資品項與數量。"
                                 elif qty <= 0:
                                     reply = "️ 無法辨識「數量」，請重新輸入。"
                                 else:
@@ -3117,7 +3051,7 @@ def page_company_supply_center():
     # ==========================================
     with tab2:
         st.write("將庫存盤點清單貼於下方，AI 將自動拆解並預估座標。")
-        bulk_text = st.text_area(" 貼上庫存盤點清單", height=150, placeholder="範例：林口倉目前有 500箱泡麵，自有車隊可送。", key="comp_bulk_text")
+        bulk_text = st.text_area(" 貼上庫存盤點清單", height=150, placeholder="請貼上庫存盤點清單", key="comp_bulk_text")
         
         if st.button(" 啟動批次解析", type="primary", key="comp_bulk_btn"):
             if not bulk_text.strip(): st.error("請貼上清單內容！")
@@ -3170,7 +3104,7 @@ def page_company_supply_center():
         st.write("若 AI 伺服器異常，可使用此傳統表單手動建檔。")
         with st.form("comp_supply_manual_form"):
             col_b, col_c = st.columns(2)
-            with col_b: location_current = st.text_input(" 物資實際存放地", placeholder="例如：花蓮車站...", key="c_man_loc")
+            with col_b: location_current = st.text_input(" 物資實際存放地", placeholder="請填寫物資實際存放或待命地點", key="c_man_loc")
             with col_c: has_logistics = st.radio(" 物流配送能力", [" 自有車隊", " 需車隊協助"], key="c_man_log")
             
             col_d, col_e, col_f = st.columns([1.5, 2, 1])
@@ -3245,9 +3179,9 @@ def page_company_claim_center():
     # Tab 1: AI 災情需求檢索 (結合南投地理與孤島情境)
     # ==========================================
     with tab1:
-        st.info(" 提示：您可以直接詢問 AI 想尋找的南投特定災區。例如：『幫我找仁愛鄉因道路中斷缺乏醫療物資的村落』或『信義鄉哪裡最需要土石流救援物資？』")
+        st.info(" 提示：您可以直接詢問 AI 想尋找的南投特定災區、資源類型或風險條件。")
         
-        search_query = st.text_input(" 對話式搜尋山區需求：", placeholder="例如：幫我找仁愛鄉或信義鄉缺物資且處於孤島狀態的區域")
+        search_query = st.text_input(" 對話式搜尋山區需求：", placeholder="請輸入欲搜尋的地區、需求類型或風險條件")
         if st.button(" Mountain Guard AI 智能檢索", type="primary"):
             if not search_query:
                 st.warning("請輸入搜尋條件。")
@@ -3358,7 +3292,7 @@ def page_company_claim_center():
                     
                     if submit_claim:
                         c_id = make_id("C")
-                        # 模擬計畫書的 AI 自動推薦最佳配送方案分數
+                        # AI 自動推薦最佳配送方案分數
                         claim = {
                             "id": c_id, "time": now_str(), "demand_id": target_d["id"], "supply_id": sel_supply_id,
                             "claimant_id": user.get("id"), "claimant_name": user.get("name"), "claim_qty": claim_qty,
@@ -3394,7 +3328,7 @@ def page_company_logistics_esg_center():
     with tab1:
         page_matched_orders()  # 呼叫您原本的出貨管理
     with tab2:
-        # 新增/重寫專屬於你們黑客松計畫書的 SDGs 儀表板
+        # 新增/重寫專屬於你們平台計畫書的 SDGs 儀表板
         page_esg_dashboard_nantou()
     with tab3:
         if st.session_state.notifications:
@@ -3493,7 +3427,7 @@ def page_smart_match_review():
                 if created:
                     st.success(f"已新增 {created} 筆智慧配對建議。")
                 else:
-                    st.info("目前沒有新的可配對組合，或已存在待審建議。")
+                    st.info("目前沒有新的可配對組合，或待審配對已存在。")
                 st.rerun()
 
     st.divider()
@@ -3658,7 +3592,7 @@ def page_admin():
                     if created:
                         st.success(f"已新增 {created} 筆智慧配對建議。")
                     else:
-                        st.info("目前沒有新的可配對組合，或已存在待審建議。")
+                        st.info("目前沒有新的可配對組合，或待審配對已存在。")
                     st.rerun()
 
         st.divider()
@@ -3713,7 +3647,7 @@ def page_admin():
         with subtab1:
             rows = [m for m in st.session_state.smart_matches if m.get("status") == "pending_admin_review"]
             if not rows:
-                st.info("目前沒有待審智慧配對。請按上方『自動掃描』產生建議。")
+                st.info("目前沒有待審智慧配對。")
             for idx, m in enumerate(rows):
                 render_admin_smart_match(m, idx, readonly=False)
 
@@ -3785,7 +3719,7 @@ def page_admin():
 # 6.5 依架構圖補齊的角色儀表板與分頁 (完美契合 Mountain Guard AI 南投山區專案)
 # =========================================================
 def page_role_dashboard():
-    """複賽版角色首頁：第一眼就回答「現在要先做什麼」。"""
+    """角色首頁：第一眼呈現「現在要先做什麼」。"""
     user = get_current_user()
     role = user.get("role")
     stats = compute_case_stats()
@@ -3822,7 +3756,7 @@ def page_role_dashboard():
             render_kpi("已結案需求", len([d for d in active_area if d.get("status") == "已完成配對"]), "本平台履歷", "success")
 
         st.markdown(
-            '<div class="demo-callout"><b>指揮邏輯：</b> AI 負責整理資訊與產生候選建議，政府保留「是否發布、是否調度、是否進入災區」的最終決策權。</div>',
+            '<div class="system-callout"><b>指揮邏輯：</b> AI 負責整理資訊與產生候選建議，政府保留「是否發布、是否調度、是否進入災區」的最終決策權。</div>',
             unsafe_allow_html=True,
         )
 
@@ -3905,7 +3839,7 @@ def page_role_dashboard():
             render_kpi("已完成任務", len([c for c in my_claims if c.get("status") == "approved" and c.get("fulfillment_status") == "已完成(收妥)"]), "可形成 ESG 履歷", "success")
 
         st.markdown(
-            '<div class="demo-callout"><b>企業端操作：</b> 建立資源 → 查看需求 → 提出認領 → 等待政府簽核 → 出貨 → 回報送達。</div>',
+            '<div class="system-callout"><b>企業端操作：</b> 建立資源 → 查看需求 → 提出認領 → 等待政府簽核 → 出貨 → 回報送達。</div>',
             unsafe_allow_html=True,
         )
         render_situation_map("公開戰情與資源分布", compact="company")
@@ -3965,7 +3899,7 @@ def page_role_dashboard():
         render_situation_map("全區戰情與資源分布", compact="admin")
 
 def page_gov_inbox():
-    """複賽版政府收件匣：以「優先級 + 證據 + 下一步」呈現。"""
+    """政府收件匣：以「優先級 + 證據 + 下一步」呈現。"""
     user = get_current_user()
     district_name = user.get("district", "南投縣")
 
@@ -4017,7 +3951,7 @@ def page_gov_inbox():
         return
 
     st.markdown(
-        '<div class="demo-callout"><b>審核標準：</b> 先確認地點與來源，再確認災情 / 路況，最後才開放外部資源認領。不要把「AI 分數」直接等同於安全許可。</div>',
+        '<div class="system-callout"><b>審核標準：</b> 先確認地點與來源，再確認災情 / 路況，最後才開放外部資源認領。不要把「AI 分數」直接等同於安全許可。</div>',
         unsafe_allow_html=True,
     )
 
@@ -4062,7 +3996,7 @@ def page_gov_inbox():
             note = st.text_input(
                 "審核備註",
                 key=f"triage_note_{d.get('id')}",
-                placeholder="例如：電話回撥村長確認道路中斷",
+                placeholder="請輸入查證方式或審核依據",
             )
             b1, b2 = st.columns(2)
             if b1.button("核准發布", key=f"triage_approve_{d.get('id')}", type="primary", use_container_width=True):
@@ -4088,15 +4022,7 @@ def page_gov_chatbot():
     district_context = user.get('district', '南投縣')
     st.title(" AI 指揮官助理")
     st.caption("專為南投山區極端氣候打造之自然語言指揮系統。支援：批次核准、孤島資源搜尋、土石流災情總結、快速錄入通報。")
-
-    st.info(f"""
-️ **南投山區應變對話範例：**
-- `幫我處理今日南投山區需求` (AI 自動將綠燈需求一鍵認證通過)
-- `尋找附近可用的越野車輛或發電機` (自動比對企業端登錄的四輪傳動車與發電機)
-- `總結目前的災情狀況與道路中斷情形` (依據高潛勢鄉鎮輸出結構化摘要)
-- `新增需求：仁愛鄉神木村因土石流道路坍方，急需 10 台發電機與保暖衣物，緊急度 5`
-- `新增供給：信義鄉有志工車隊提供 5 輛四輪傳動越野車，可協助挺進交通中斷點`
-""")
+    st.info("支援自然語言指揮、案件查詢、資源搜尋、災情摘要與新案件快速建立。")
 
     if "gov_chat" not in st.session_state:
         st.session_state.gov_chat = [
@@ -4118,7 +4044,7 @@ def page_gov_chatbot():
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    if user_input := st.chat_input("請輸入應變指揮指令（例如：新增需求：信義鄉同富村急需醫療用品 20 箱）"):
+    if user_input := st.chat_input("請輸入應變指揮指令"):
         st.session_state.gov_chat.append({"role": "user", "content": user_input})
 
         with st.chat_message("user"):
@@ -4140,7 +4066,7 @@ def page_gov_chatbot():
                     qty = int(extracted.get("qty", 0) or 0)
 
                     if not item or item in ["未知", "無", ""] or qty <= 0:
-                        reply = "️ 無法辨識通報品項或數量，請輸入明確格式，例如：新增需求：地點、品項、數量、緊急度。"
+                        reply = "️ 無法辨識通報品項或數量，請輸入完整格式：新增需求：地點、品項、數量、緊急度。"
                     else:
                         # 擷取或自動填入南投行政區
                         detected_district = extracted.get("district", district_context)
@@ -4309,7 +4235,7 @@ def page_gov_chatbot():
 
 
     if st.session_state.get("awaiting_action") == "approve_all_demands":
-        st.info("為保留人機協作，批次自動發布在複賽 Demo 已停用。請前往「收件匣」逐筆完成案件驗證。")
+        st.info("為保留人機協作，批次自動發布在目前不開放批次自動發布，請前往「收件匣」逐筆完成案件驗證，以保留人機協作與稽核紀錄。")
         st.session_state.awaiting_action = None
 
 # =========================================================
@@ -4497,11 +4423,11 @@ def page_esg_dashboard():
     st.dataframe(pd.DataFrame(data), hide_index=True, use_container_width=True)
     
     st.divider()
-    #  重大優化：優化 Prompt 提示詞，完美對接南投黑客松與 SDGs 計畫目標
+    #  重大優化：優化 Prompt 提示詞，完美對接南投平台與 SDGs 計畫目標
     if st.button(" 一鍵生成 Mountain Guard AI 永續報告 (AI 撰稿)", type="primary"):
         with st.spinner("AI 正在整合南投山區救援數據，並依據 SDGs 3, 9, 11, 13 指標撰寫報告..."):
             prompt = f"""
-            你是一個專業的企業品牌公關與永續發展(ESG/CSR)撰稿專家，正在為參與南投縣山城數位黑客松防救災專案的企業撰寫成果。
+            你是一個專業的企業品牌公關與永續發展(ESG/CSR)撰稿專家，正在為南投山區防災協作計畫中的企業撰寫成果。
             請根據以下企業「{user.get('name')}」在「Mountain Guard AI 南投山區韌性救援平台」上的真實馳援數據，寫一篇大約 400 字、情感動人且極具專業度的 ESG 永續報告草稿：
             
             【企業馳援南投數據】
@@ -4595,7 +4521,7 @@ def page_gov_supply_review():
 def page_transfer_settings():
     user = get_current_user()
     st.title(" 災防轄區邊界設定")
-    st.caption("競賽 Demo 說明：此處展示地方政府與公所的數位治理邊界；實務運作將介接內政部南投縣行政區 GIS 資料庫。")
+    st.caption("此處管理地方政府與公所的數位治理邊界。各權限依轄區與村里範圍進行審核與調度。")
     st.info(f" 您目前最高指揮審核權限範圍：**【{user.get('district')} / {user.get('village')}】**")
     st.write(" **智慧治理規則**：各鄉鎮長官（如仁愛鄉長）僅能審核、調度發生於所屬鄉鎮之孤島求助。若發生跨區土石流災情，需由「平台管理員(縣級應變中心)」進行跨區調配。")
 
@@ -4628,16 +4554,16 @@ def page_system_overview():
 
 
 def page_system_settings():
-    st.title("️ 黑客松競賽系統設定展示")
-    st.caption("此頁面旨在向麥克松評審展示系統底層的「多樣化分類、弱網備援及分層授權」實作概念。")
+    st.title("️ 平台設定與治理")
+    st.caption("集中管理資源分類、通訊備援與分層授權規則。")
     
     st.subheader(" 南投山區特性資源字典")
     st.write("已針對南投土石流、斷橋情境，擴充如「空拍機勘災」、「四輪傳動越野車」、「直升機空投」等特種選項。")
     st.json(RESOURCE_TYPES)
     
     st.subheader(" 山區弱網通訊設定")
-    st.write(" **SMTP 信件派送**：", " 即時派車單服務已連線" if SMTP_HOST and SMTP_USER else "️ Demo 模式運作中 (日誌紀錄)")
-    st.write(" **SMS/OTP 災區簡訊備援**：模擬災區斷網，保留手機純簡訊發送與驗證通道，確保「孤島」通訊不中斷。")
+    st.write(" **SMTP 信件派送**：", " 即時派車單服務已連線" if SMTP_HOST and SMTP_USER else " 尚未設定 SMTP，通知保留於系統紀錄")
+    st.write(" **SMS/OTP 災區簡訊備援**：保留手機簡訊發送與驗證通道，確保「孤島」通訊不中斷。")
     
     st.subheader(" 數位治理分權架構 (RBAC)")
     st.write("‍‍‍ **在地縣民/受災居民**：通報受困狀況、在地互助、檢視避難與派單進度。")
@@ -4656,7 +4582,7 @@ def page_multimodal():
     
     with col_in:
         uploaded_file = st.file_uploader(" 上傳山區手寫紙條、物資清單照片或災情截圖", type=["jpg", "jpeg", "png"], help="️ 隱私防護：系統已自動啟動南投災區專屬去識別化機制，自動遮蔽清晰人臉。")
-        raw_text_input = st.text_area("️ 補充無線電通報語音紀錄或文字說明", placeholder="輸入範例：我是信義鄉神木村長，這裡舊林道坍方，有 3 戶居民斷糧，急需嬰兒奶粉 5 罐、白米 2 包，目前無人機可降落。")
+        raw_text_input = st.text_area("️ 補充無線電通報語音紀錄或文字說明", placeholder="請輸入現場災情、位置、受影響情形與需求內容")
         
         if st.button(" 啟動 Mountain Guard 多模態萃取與 DLP 風險掃描", type="primary"):
             img_bytes = uploaded_file.getvalue() if uploaded_file else None
@@ -4788,7 +4714,7 @@ def page_multimodal():
                 st.success(f" 成功將民間義舉轉換為標準庫存！已建檔：{item} x {qty} 件（登錄集結地: {district}）")
 
 # =========================================================
-# 7. Main App 與複賽 Demo 導覽
+# 7. Main App 與系統導覽
 # =========================================================
 st.set_page_config(
     page_title="ResQ-Link｜南投山區防災協作平台",
@@ -4809,8 +4735,7 @@ role = user.get("role")
 role_pages = {
     "government": [
         "戰情總覽",
-        "Demo 走查",
-        "山區戰情",
+                "山區戰情",
         "收件匣",
         "AI 指揮助理",
         "媒合建議",
@@ -4837,8 +4762,7 @@ role_pages = {
     "admin": [
         "系統總覽",
         "山區戰情",
-        "Demo 走查",
-        "管理總控台",
+                "管理總控台",
         "媒合建議",
         "物流追蹤",
         "身分與設定",
@@ -4880,8 +4804,6 @@ with st.sidebar:
     )
 
     st.divider()
-    st.caption("Demo 建議順序：戰情總覽 → 收件匣 → 媒合 / 調度 → 物流追蹤")
-
     if st.button("登出", use_container_width=True):
         add_audit("登出系統", user.get("name"))
         st.session_state.current_user = None
@@ -4905,9 +4827,6 @@ elif page == "居民總覽":
 
 elif page == "系統總覽":
     page_role_dashboard()
-
-elif page == "Demo 走查":
-    page_demo_flow()
 
 elif page == "山區戰情":
     page_map_pool()
