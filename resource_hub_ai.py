@@ -8,6 +8,9 @@ import re
 import csv
 import io
 import urllib.request
+import urllib.parse
+import urllib.error
+import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
@@ -1602,8 +1605,21 @@ def build_seven_day_trend():
 # 農業部農村發展及水土保持署：即時土石流／大規模崩塌警戒
 OFFICIAL_LANDSLIDE_ALERT_URL = "https://ls.ardswc.gov.tw/api/LandslideAlertOpenData"
 OFFICIAL_LANDSLIDE_REFERENCE_URL = "https://246.ardswc.gov.tw/WebService/GetLSCountyTownAlertValueList.ashx"
-# 內政部消防署／政府資料開放平臺：避難收容處所點位檔
+
+# 南投縣政府開放資料平台：避難收容所 CKAN Data API
+# 此 API 目前可直接回傳 JSON，且 resource_id 為該資料集的公開資源 ID。
+NANTOU_SHELTER_API_URL = "https://data.nantou.gov.tw/api/action/datastore_search"
+NANTOU_SHELTER_RESOURCE_ID = "f859af9c-30f8-42ad-9141-0b616434f1cb"
+
+# 內政部消防署／政府資料開放平臺：避難收容處所點位檔（主要提供經緯度）
 OFFICIAL_SHELTER_CSV_URL = "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/ED6CF735-6C03-4573-A882-72C1BEC799CB/resource/54550E2F-4567-4C8F-BD2E-E54E9D0386B8/download"
+
+# 經濟部水利署水文開放資料：免驗證介面，用於連線狀態檢查。
+WRA_PRECIP_META_URL = "https://iot.wra.gov.tw/rasterMap/precipitation/rasterMapMetaData"
+
+# 目前已確認存在 Python/OpenSSL 憑證鏈相容性問題的政府公開資料主機。
+# 僅對此主機啟用安全性受限的相容性 fallback。其他 HTTPS 來源仍維持正常憑證驗證。
+INSECURE_SSL_FALLBACK_HOSTS = {"opdadm.moi.gov.tw"}
 
 
 def _flatten_records(payload):
@@ -1626,6 +1642,20 @@ def _flatten_records(payload):
     return []
 
 
+def _urlopen_government(req, timeout=8):
+    """政府公開資料呼叫器：正常 TLS 優先；僅特定來源憑證鏈失敗時使用相容性 fallback。"""
+    host = urllib.parse.urlparse(req.full_url).hostname or ""
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.URLError as exc:
+        message = str(exc)
+        ssl_error = "CERTIFICATE_VERIFY_FAILED" in message or "certificate verify failed" in message.lower()
+        if host in INSECURE_SSL_FALLBACK_HOSTS and ssl_error:
+            context = ssl._create_unverified_context()
+            return urllib.request.urlopen(req, timeout=timeout, context=context)
+        raise
+
+
 @st.cache_data(ttl=180, show_spinner=False)
 def fetch_official_json(url):
     """讀取公開政府 JSON；來源異常時回傳錯誤字串，不阻斷平台其他功能。"""
@@ -1637,22 +1667,44 @@ def fetch_official_json(url):
                 "Accept": "application/json,text/plain,*/*",
             },
         )
-        with urllib.request.urlopen(req, timeout=6) as response:
+        with _urlopen_government(req, timeout=8) as response:
             raw = response.read()
-        return json.loads(raw.decode("utf-8-sig")), ""
+        return json.loads(raw.decode("utf-8-sig", errors="replace")), ""
     except Exception as exc:
         return None, str(exc)
 
 
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_nantou_shelter_api(limit=1000):
+    """南投縣政府 CKAN Data API：取得目前公開的避難收容所資料。"""
+    try:
+        query = urllib.parse.urlencode({
+            "resource_id": NANTOU_SHELTER_RESOURCE_ID,
+            "limit": int(limit),
+        })
+        url = f"{NANTOU_SHELTER_API_URL}?{query}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "ResQ-Link/1.0", "Accept": "application/json"},
+        )
+        with _urlopen_government(req, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8-sig", errors="replace"))
+        if not payload.get("success"):
+            return [], str(payload.get("error") or "南投縣政府 Data API 回傳失敗")
+        return payload.get("result", {}).get("records", []), ""
+    except Exception as exc:
+        return [], str(exc)
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_official_shelter_csv(url):
-    """讀取消防署避難收容處所官方 CSV。"""
+    """讀取消防署避難收容處所官方 CSV；此來源主要用於座標補充。"""
     try:
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "ResQ-Link/1.0", "Accept": "text/csv,text/plain,*/*"},
         )
-        with urllib.request.urlopen(req, timeout=8) as response:
+        with _urlopen_government(req, timeout=10) as response:
             raw = response.read()
         text_data = raw.decode("utf-8-sig", errors="replace")
         return list(csv.DictReader(io.StringIO(text_data))), ""
@@ -1728,43 +1780,125 @@ def fetch_official_landslide_reference_points():
     return points, err
 
 
-def fetch_official_shelters():
-    rows, err = fetch_official_shelter_csv(OFFICIAL_SHELTER_CSV_URL)
-    shelters = []
+def _norm_text(value):
+    return re.sub(r"\s+", "", str(value or "").strip()).replace("臺", "台")
+
+
+def _build_shelter_coordinate_index(rows):
+    index = {}
     for row in rows:
-        county = str(row.get("縣市及鄉鎮市區") or row.get("縣市") or "").strip()
-        if county and "南投" not in county:
+        county_town = _norm_text(row.get("縣市及鄉鎮市區") or row.get("縣市") or "")
+        if county_town and "南投" not in county_town:
+            continue
+        name = _norm_text(row.get("避難收容處所名稱") or row.get("name") or "")
+        if not name:
             continue
         try:
             lat = float(str(row.get("緯度") or row.get("lat") or "").strip())
             lon = float(str(row.get("經度") or row.get("lon") or "").strip())
         except (TypeError, ValueError):
             continue
-
-        town = county
-        village = str(row.get("村里") or "").strip()
-        name = str(row.get("避難收容處所名稱") or row.get("name") or "避難收容處所").strip()
-        disaster_type = str(row.get("適用災害類別") or "").strip()
-        shelters.append({
-            "名稱": name,
+        item = {
             "lat": lat,
             "lon": lon,
+            "村里": str(row.get("村里") or "").strip(),
+            "適用災害": str(row.get("適用災害類別") or "").strip(),
+        }
+        index[(county_town, name)] = item
+        index.setdefault(("", name), item)
+    return index
+
+
+def fetch_official_shelters():
+    """以南投縣政府 Data API 為主；消防署官方 CSV 用來補上經緯度。"""
+    api_rows, api_err = fetch_nantou_shelter_api()
+    coord_rows, coord_err = fetch_official_shelter_csv(OFFICIAL_SHELTER_CSV_URL)
+    coord_index = _build_shelter_coordinate_index(coord_rows)
+
+    shelters = []
+    for row in api_rows:
+        town = str(row.get("鄉鎮市區") or row.get("避難收容所地址（鄉鎮市區）") or "").strip()
+        name = str(row.get("避難收容所") or "避難收容處所").strip()
+        village = str(row.get("避難收容所地址（村里）") or "").strip()
+        address = "".join([
+            str(row.get("避難收容所地址（縣市）") or ""),
+            str(row.get("避難收容所地址（鄉鎮市區）") or ""),
+            str(row.get("避難收容所地址（街路門牌）") or ""),
+        ]).strip()
+        coord = coord_index.get((_norm_text(town), _norm_text(name))) or coord_index.get(("", _norm_text(name)))
+        item = {
+            "名稱": name,
             "類型": "政府避難收容處所",
             "狀態": "據點資料",
             "優先": f"{town}{village}" if village else town,
-            "預計收容": str(row.get("預計收容人數") or "—").strip(),
-            "地址": str(row.get("避難收容處所地址") or "").strip(),
-            "適用災害": disaster_type,
-            "資料來源": "內政部消防署／政府資料開放平臺",
-        })
+            "預計收容": str(row.get("容納人數（提供人數）") or "—").strip(),
+            "地址": address,
+            "適用災害": str(row.get("適用災害") or "").strip(),
+            "聯絡人": str(row.get("聯絡人") or "").strip(),
+            "聯絡電話": str(row.get("聯絡人市話") or "").strip(),
+            "資料來源": "南投縣政府開放資料平台 CKAN API",
+            "lat": coord.get("lat") if coord else None,
+            "lon": coord.get("lon") if coord else None,
+            "村里": coord.get("村里", village) if coord else village,
+        }
+        shelters.append(item)
 
+    # 若南投縣政府 API 短暫失聯，但消防署官方座標檔可用，仍保留地圖資料。
+    if not shelters and coord_rows:
+        for row in coord_rows:
+            county = str(row.get("縣市及鄉鎮市區") or row.get("縣市") or "").strip()
+            if county and "南投" not in county:
+                continue
+            try:
+                lat = float(str(row.get("緯度") or "").strip())
+                lon = float(str(row.get("經度") or "").strip())
+            except (TypeError, ValueError):
+                continue
+            shelters.append({
+                "名稱": str(row.get("避難收容處所名稱") or "避難收容處所").strip(),
+                "lat": lat,
+                "lon": lon,
+                "類型": "政府避難收容處所",
+                "狀態": "據點資料",
+                "優先": f"{county}{str(row.get('村里') or '').strip()}",
+                "預計收容": str(row.get("預計收容人數") or "—").strip(),
+                "地址": str(row.get("避難收容處所地址") or "").strip(),
+                "適用災害": str(row.get("適用災害類別") or "").strip(),
+                "資料來源": "內政部消防署／政府資料開放平臺",
+            })
+
+    if api_err and coord_err:
+        err = f"南投縣政府 Data API：{api_err}；消防署座標資料：{coord_err}"
+    elif api_err and not shelters:
+        err = f"南投縣政府 Data API：{api_err}"
+    elif not shelters:
+        err = "目前沒有可用的南投縣避難收容資料。"
+    else:
+        err = ""
     return shelters, err
+
+
+def check_wra_api():
+    """檢查水利署免驗證資料服務是否可連線。"""
+    start = time.perf_counter()
+    try:
+        req = urllib.request.Request(
+            WRA_PRECIP_META_URL,
+            headers={"User-Agent": "ResQ-Link/1.0", "Accept": "application/json,text/plain,*/*"},
+        )
+        with _urlopen_government(req, timeout=8) as response:
+            response.read(128)
+            status = getattr(response, "status", 200)
+        return {"ok": True, "status": status, "latency_ms": round((time.perf_counter() - start) * 1000)}
+    except Exception as exc:
+        return {"ok": False, "status": "—", "latency_ms": round((time.perf_counter() - start) * 1000), "error": str(exc)}
 
 
 def render_official_data_panel():
     alerts, alert_err = fetch_official_landslide_alerts()
     shelters, shelter_err = fetch_official_shelters()
     ref_points, ref_err = fetch_official_landslide_reference_points()
+    wra_health = check_wra_api()
 
     red = [a for a in alerts if a.get("警戒") == "紅色警戒"]
     yellow = [a for a in alerts if a.get("警戒") == "黃色警戒"]
@@ -1778,8 +1912,16 @@ def render_official_data_panel():
     with c3:
         render_kpi("南投官方避難據點", len(shelters), "消防署公開點位", "info")
     with c4:
-        online_sources = sum([not bool(alert_err), not bool(shelter_err), not bool(ref_err)])
-        render_kpi("政府資料來源", f"{online_sources}/3", "即時警戒／避難據點／參考座標", "success" if online_sources == 3 else "warning")
+        online_sources = sum([not bool(alert_err), not bool(shelter_err), wra_health.get("ok", False)])
+        render_kpi("政府資料來源", f"{online_sources}/3", "警戒／避難／水文 API", "success" if online_sources == 3 else "warning")
+
+    refresh_col, _ = st.columns([1, 4])
+    with refresh_col:
+        if st.button("重新取得政府資料", key="refresh_official_data", use_container_width=True):
+            fetch_official_json.clear()
+            fetch_nantou_shelter_api.clear()
+            fetch_official_shelter_csv.clear()
+            st.rerun()
 
     with st.expander("官方防災資料", expanded=False):
         if alert_err:
@@ -1788,6 +1930,15 @@ def render_official_data_panel():
             st.warning(f"避難收容處所資料暫時無法取得：{shelter_err}")
         if ref_err:
             st.caption(f"大規模崩塌參考座標資料暫時無法取得：{ref_err}")
+
+        api_c1, api_c2, api_c3 = st.columns(3)
+        with api_c1:
+            nt_rows, nt_err = fetch_nantou_shelter_api()
+            st.caption("南投縣政府避難 Data API：正常" if not nt_err else f"南投縣政府避難 Data API：{nt_err}")
+        with api_c2:
+            st.caption("農業部水保署警戒 API：正常" if not alert_err else f"農業部水保署警戒 API：{alert_err}")
+        with api_c3:
+            st.caption("經濟部水利署 API：正常" if wra_health.get("ok") else f"經濟部水利署 API：{wra_health.get('error', '無法連線')}")
 
         left, right = st.columns(2, gap="medium")
         with left:
@@ -1809,8 +1960,8 @@ def render_official_data_panel():
                 st.info("目前無法取得南投縣官方避難據點資料。")
 
         st.caption(
-            "資料來源：農業部農村發展及水土保持署「土石流及大規模崩塌警戒資料」公開 API；"
-            "內政部消防署「避難收容處所點位檔」。官方資料以快取方式更新，來源異常時不會阻斷平台操作。"
+            "資料來源：農業部農村發展及水土保持署警戒 API、南投縣政府開放資料平台避難收容 Data API、"
+            "內政部消防署避難收容座標資料、經濟部水利署水文 API。來源資料以快取方式更新。"
         )
 
     return alerts, shelters, ref_points
@@ -1894,7 +2045,8 @@ def render_situation_map(title="山區戰情與避難地圖", compact=False):
                 # 官方資料較完整時，只保留南投縣且與土石流／震災等災害類型相容的據點。
                 filtered_shelters = [
                     x for x in official_shelters
-                    if (not x.get("適用災害")) or ("土石流" in x.get("適用災害", "") or "震災" in x.get("適用災害", ""))
+                    if x.get("lat") is not None and x.get("lon") is not None
+                    and ((not x.get("適用災害")) or ("土石流" in x.get("適用災害", "") or "震災" in x.get("適用災害", "")))
                 ]
                 shelter_rows = filtered_shelters[:60]
             else:
