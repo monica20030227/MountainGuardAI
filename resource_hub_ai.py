@@ -5,6 +5,9 @@ import base64
 import smtplib
 import random
 import re
+import csv
+import io
+import urllib.request
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
@@ -320,6 +323,12 @@ def get_current_user():
 
 def is_logged_in():
     return st.session_state.current_user is not None
+
+
+def navigate_to(page):
+    """統一處理頁面導覽，避免直接修改 widget 綁定的 session key。"""
+    st.session_state.nav_page = page
+    st.rerun()
 
 
 def can_gov_review(gov_user, record):
@@ -1025,8 +1034,20 @@ def inject_professional_css():
             background: #f4f6f8;
         }
 
-        [data-testid="stHeader"] {
-            background: rgba(244,246,248,0.92);
+        /* Streamlit 原生頂端列：透明化，避免遮住頁面標題與第一個資訊區塊 */
+        header, [data-testid="stHeader"] {
+            background: transparent !important;
+            box-shadow: none !important;
+            border-bottom: 0 !important;
+        }
+
+        [data-testid="stToolbar"] {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        [data-testid="stDecoration"] {
+            display: none !important;
         }
 
         [data-testid="stSidebar"] {
@@ -1034,10 +1055,37 @@ def inject_professional_css():
             border-right: 1px solid var(--border);
         }
 
+        [data-testid="stSidebar"] .stButton > button {
+            width: 100%;
+            justify-content: flex-start;
+            text-align: left;
+            border-radius: 9px;
+            min-height: 2.3rem;
+            padding: 0.38rem 0.7rem;
+            font-size: 0.83rem;
+        }
+
         .block-container {
-            padding-top: 1.15rem;
-            padding-bottom: 2rem;
+            padding-top: 3.35rem !important;
+            padding-bottom: 2.5rem !important;
             max-width: 1500px;
+        }
+
+        /* 增加區塊間留白，降低資訊密度 */
+        [data-testid="stVerticalBlock"] {
+            gap: 0.78rem;
+        }
+
+        [data-testid="stHorizontalBlock"] {
+            gap: 1rem;
+        }
+
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            margin-bottom: 0.9rem !important;
+        }
+
+        .panel {
+            margin-bottom: 0.85rem;
         }
 
         h1, h2, h3, h4 {
@@ -1548,9 +1596,232 @@ def build_seven_day_trend():
     return pd.DataFrame(rows).set_index("日期")
 
 
+# =========================================================
+# 6.1 政府官方開放資料整合
+# =========================================================
+# 農業部農村發展及水土保持署：即時土石流／大規模崩塌警戒
+OFFICIAL_LANDSLIDE_ALERT_URL = "https://ls.ardswc.gov.tw/api/LandslideAlertOpenData"
+OFFICIAL_LANDSLIDE_REFERENCE_URL = "https://246.ardswc.gov.tw/WebService/GetLSCountyTownAlertValueList.ashx"
+# 內政部消防署／政府資料開放平臺：避難收容處所點位檔
+OFFICIAL_SHELTER_CSV_URL = "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/ED6CF735-6C03-4573-A882-72C1BEC799CB/resource/54550E2F-4567-4C8F-BD2E-E54E9D0386B8/download"
+
+
+def _flatten_records(payload):
+    """統一政府 API 常見的 list / data / result / records 結構。"""
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if isinstance(payload, dict):
+        for key in ("data", "result", "records", "rows", "items", "features"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [x for x in value if isinstance(x, dict)]
+            if isinstance(value, dict):
+                nested = _flatten_records(value)
+                if nested:
+                    return nested
+        if any(k in payload for k in ("County", "Town", "AlertLevel", "name", "openstatus", "shelterId")):
+            return [payload]
+    return []
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_official_json(url):
+    """讀取公開政府 JSON；來源異常時回傳錯誤字串，不阻斷平台其他功能。"""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "ResQ-Link/1.0",
+                "Accept": "application/json,text/plain,*/*",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=6) as response:
+            raw = response.read()
+        return json.loads(raw.decode("utf-8-sig")), ""
+    except Exception as exc:
+        return None, str(exc)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_official_shelter_csv(url):
+    """讀取消防署避難收容處所官方 CSV。"""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "ResQ-Link/1.0", "Accept": "text/csv,text/plain,*/*"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            raw = response.read()
+        text_data = raw.decode("utf-8-sig", errors="replace")
+        return list(csv.DictReader(io.StringIO(text_data))), ""
+    except Exception as exc:
+        return [], str(exc)
+
+
+def fetch_official_landslide_alerts():
+    payload, err = fetch_official_json(OFFICIAL_LANDSLIDE_ALERT_URL)
+    rows = _flatten_records(payload)
+    alerts = []
+
+    for row in rows:
+        county = str(row.get("County") or row.get("county") or "").strip()
+        if "南投" not in county:
+            continue
+
+        level_raw = str(row.get("AlertLevel") or row.get("alertLevel") or "").lower().strip()
+        level = {
+            "r": "紅色警戒",
+            "y": "黃色警戒",
+        }.get(level_raw, level_raw or "未提供")
+
+        type_raw = str(row.get("AlertType") or row.get("alertType") or "").upper().strip()
+        alert_type = {
+            "D": "土石流",
+            "L": "大規模崩塌",
+        }.get(type_raw, "災害警戒")
+
+        alerts.append({
+            "縣市": county,
+            "鄉鎮": str(row.get("Town") or row.get("town") or "").strip(),
+            "村里": str(row.get("Vill") or row.get("vill") or "").strip(),
+            "類型": alert_type,
+            "警戒": level,
+            "更新時間": str(row.get("LastUpdateDate") or row.get("lastUpdateDate") or "").strip(),
+            "編號": str(row.get("DebrisNo") or row.get("LandslideID") or "").strip(),
+            "報別": str(row.get("ReportID") or row.get("reportID") or "").strip(),
+        })
+
+    order = {"紅色警戒": 0, "黃色警戒": 1}
+    alerts.sort(key=lambda x: (order.get(x.get("警戒"), 9), x.get("鄉鎮", ""), x.get("村里", "")))
+
+    # API 正常但沒有警戒資料時，保留「無警戒」的正常狀態，不視為系統錯誤。
+    if isinstance(payload, dict) and payload.get("errorMessage") and not alerts:
+        err = ""
+    return alerts, err
+
+
+def fetch_official_landslide_reference_points():
+    """取得官方大規模崩塌警戒值參考點，供地圖建立官方座標層。"""
+    payload, err = fetch_official_json(OFFICIAL_LANDSLIDE_REFERENCE_URL)
+    rows = _flatten_records(payload)
+    points = []
+    for row in rows:
+        county = str(row.get("County") or "").strip()
+        if "南投" not in county:
+            continue
+        try:
+            lat = float(row.get("Lat"))
+            lon = float(row.get("Lng"))
+        except (TypeError, ValueError):
+            continue
+        points.append({
+            "縣市": county,
+            "鄉鎮": str(row.get("Town") or "").strip(),
+            "編號": str(row.get("LSNo") or "").strip(),
+            "名稱": str(row.get("Name") or "").strip(),
+            "警戒參考值": row.get("AlertValue"),
+            "lat": lat,
+            "lon": lon,
+        })
+    return points, err
+
+
+def fetch_official_shelters():
+    rows, err = fetch_official_shelter_csv(OFFICIAL_SHELTER_CSV_URL)
+    shelters = []
+    for row in rows:
+        county = str(row.get("縣市及鄉鎮市區") or row.get("縣市") or "").strip()
+        if county and "南投" not in county:
+            continue
+        try:
+            lat = float(str(row.get("緯度") or row.get("lat") or "").strip())
+            lon = float(str(row.get("經度") or row.get("lon") or "").strip())
+        except (TypeError, ValueError):
+            continue
+
+        town = county
+        village = str(row.get("村里") or "").strip()
+        name = str(row.get("避難收容處所名稱") or row.get("name") or "避難收容處所").strip()
+        disaster_type = str(row.get("適用災害類別") or "").strip()
+        shelters.append({
+            "名稱": name,
+            "lat": lat,
+            "lon": lon,
+            "類型": "政府避難收容處所",
+            "狀態": "據點資料",
+            "優先": f"{town}{village}" if village else town,
+            "預計收容": str(row.get("預計收容人數") or "—").strip(),
+            "地址": str(row.get("避難收容處所地址") or "").strip(),
+            "適用災害": disaster_type,
+            "資料來源": "內政部消防署／政府資料開放平臺",
+        })
+
+    return shelters, err
+
+
+def render_official_data_panel():
+    alerts, alert_err = fetch_official_landslide_alerts()
+    shelters, shelter_err = fetch_official_shelters()
+    ref_points, ref_err = fetch_official_landslide_reference_points()
+
+    red = [a for a in alerts if a.get("警戒") == "紅色警戒"]
+    yellow = [a for a in alerts if a.get("警戒") == "黃色警戒"]
+
+    # 讓官方資料狀態直接出現在戰情頁，不需要使用者另外猜測來源是否有效。
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        render_kpi("官方紅色警戒", len(red), "農業部水土保持署即時警戒", "danger")
+    with c2:
+        render_kpi("官方黃色警戒", len(yellow), "農業部水土保持署即時警戒", "warning")
+    with c3:
+        render_kpi("南投官方避難據點", len(shelters), "消防署公開點位", "info")
+    with c4:
+        online_sources = sum([not bool(alert_err), not bool(shelter_err), not bool(ref_err)])
+        render_kpi("政府資料來源", f"{online_sources}/3", "即時警戒／避難據點／參考座標", "success" if online_sources == 3 else "warning")
+
+    with st.expander("官方防災資料", expanded=False):
+        if alert_err:
+            st.warning(f"土石流／大規模崩塌警戒資料暫時無法取得：{alert_err}")
+        if shelter_err:
+            st.warning(f"避難收容處所資料暫時無法取得：{shelter_err}")
+        if ref_err:
+            st.caption(f"大規模崩塌參考座標資料暫時無法取得：{ref_err}")
+
+        left, right = st.columns(2, gap="medium")
+        with left:
+            st.markdown("#### 南投縣官方警戒")
+            if alerts:
+                st.dataframe(pd.DataFrame(alerts), hide_index=True, use_container_width=True)
+            else:
+                st.info("目前官方 API 未回傳南投縣警戒案件。")
+
+        with right:
+            st.markdown("#### 南投縣避難收容處所")
+            if shelters:
+                shelter_view = [
+                    {k: row.get(k) for k in ["名稱", "優先", "預計收容", "適用災害", "地址"]}
+                    for row in shelters[:50]
+                ]
+                st.dataframe(pd.DataFrame(shelter_view), hide_index=True, use_container_width=True)
+            else:
+                st.info("目前無法取得南投縣官方避難據點資料。")
+
+        st.caption(
+            "資料來源：農業部農村發展及水土保持署「土石流及大規模崩塌警戒資料」公開 API；"
+            "內政部消防署「避難收容處所點位檔」。官方資料以快取方式更新，來源異常時不會阻斷平台操作。"
+        )
+
+    return alerts, shelters, ref_points
+
+
 def render_situation_map(title="山區戰情與避難地圖", compact=False):
-    """2D 戰情圖：以位置、優先度與資源分布為主，不使用 3D 裝飾。"""
+    """2D 戰情圖：整合平台案件、民間資源與政府官方避難據點。"""
     stats = compute_case_stats()
+    official_alerts, official_alert_err = fetch_official_landslide_alerts()
+    official_shelters, official_shelter_err = fetch_official_shelters()
+    official_ref_points, official_ref_err = fetch_official_landslide_reference_points()
 
     st.markdown(f'<div class="panel-head">{title}</div>', unsafe_allow_html=True)
     with st.container(border=True):
@@ -1617,15 +1888,24 @@ def render_situation_map(title="山區戰情與避難地圖", compact=False):
                     "線寬": 110,
                 })
 
-        shelters = [
-            {"名稱": "神木國小（空投 / 收容）", "lat": 23.535, "lon": 120.863, "類型": "避難與空投點", "狀態": "固定據點", "優先": "據點"},
-            {"名稱": "翠華村避難中心", "lat": 24.195, "lon": 121.285, "類型": "前進指揮所", "狀態": "固定據點", "優先": "據點"},
-            {"名稱": "水里鄉綜合活動中心", "lat": 23.811, "lon": 120.853, "類型": "收容據點", "狀態": "固定據點", "優先": "據點"},
-            {"名稱": "埔里綜合體育館", "lat": 23.965, "lon": 120.967, "類型": "物資集結站", "狀態": "固定據點", "優先": "據點"},
-            {"名稱": "南投縣政府消防局 EOC", "lat": 23.902, "lon": 120.691, "類型": "應變指揮中心", "狀態": "固定據點", "優先": "據點"},
-        ]
-
-        shelter_rows = shelters if show_shelters else []
+        shelter_rows = []
+        if show_shelters:
+            if official_shelters:
+                # 官方資料較完整時，只保留南投縣且與土石流／震災等災害類型相容的據點。
+                filtered_shelters = [
+                    x for x in official_shelters
+                    if (not x.get("適用災害")) or ("土石流" in x.get("適用災害", "") or "震災" in x.get("適用災害", ""))
+                ]
+                shelter_rows = filtered_shelters[:60]
+            else:
+                # 政府來源暫時不可用時保留平台現有核心據點，確保地圖仍可操作。
+                shelter_rows = [
+                    {"名稱": "神木村應變據點", "lat": 23.535, "lon": 120.863, "類型": "平台避難／應變據點", "狀態": "平台據點", "優先": "據點"},
+                    {"名稱": "翠華村應變據點", "lat": 24.195, "lon": 121.285, "類型": "平台避難／應變據點", "狀態": "平台據點", "優先": "據點"},
+                    {"名稱": "水里鄉集結據點", "lat": 23.811, "lon": 120.853, "類型": "平台集結據點", "狀態": "平台據點", "優先": "據點"},
+                    {"名稱": "埔里集結據點", "lat": 23.965, "lon": 120.967, "類型": "平台集結據點", "狀態": "平台據點", "優先": "據點"},
+                    {"名稱": "南投縣應變中心", "lat": 23.902, "lon": 120.691, "類型": "平台應變中心", "狀態": "平台據點", "優先": "據點"},
+                ]
 
         supply_rows = []
         if show_supplies:
@@ -1683,6 +1963,47 @@ def render_situation_map(title="山區戰情與避難地圖", compact=False):
                         get_target_color=[29, 95, 167, 120],
                         get_width=2,
                         pickable=True,
+                    )
+                )
+
+        # 官方警戒：目前公開警戒 API 為行政區／警戒點資訊，優先以官方參考座標建立地圖層。
+        if show_disasters and official_alerts and official_ref_points:
+            ref_by_town = {}
+            for ref in official_ref_points:
+                ref_by_town.setdefault(ref.get("鄉鎮", ""), ref)
+
+            official_rows = []
+            for alert in official_alerts:
+                ref = ref_by_town.get(alert.get("鄉鎮", ""))
+                if not ref:
+                    continue
+                level_color = [185, 35, 24, 235] if alert.get("警戒") == "紅色警戒" else [183, 110, 0, 230]
+                official_rows.append({
+                    "lat": ref.get("lat"),
+                    "lon": ref.get("lon"),
+                    "名稱": f"官方{alert.get('類型')}警戒｜{alert.get('鄉鎮')}",
+                    "類型": "政府官方警戒",
+                    "狀態": alert.get("警戒"),
+                    "優先": f"{alert.get('警戒')}｜{alert.get('村里') or '行政區級'}",
+                    "fill": level_color,
+                    "radius": 780 if alert.get("警戒") == "紅色警戒" else 620,
+                    "ring": [255, 255, 255, 240],
+                    "線寬": 150,
+                })
+            if official_rows:
+                layers.append(
+                    pdk.Layer(
+                        "ScatterplotLayer",
+                        data=official_rows,
+                        get_position="[lon, lat]",
+                        get_fill_color="fill",
+                        get_radius="radius",
+                        get_line_color="ring",
+                        get_line_width="線寬",
+                        stroked=True,
+                        pickable=True,
+                        radius_min_pixels=6,
+                        radius_max_pixels=24,
                     )
                 )
 
@@ -1764,12 +2085,12 @@ def render_situation_map(title="山區戰情與避難地圖", compact=False):
         st.markdown(
             """
             <div class="legend-row">
-                <div class="legend-item"><span class="legend-dot" style="background:#b92318;"></span>災情 / P1 高優先</div>
-                <div class="legend-item"><span class="legend-dot" style="background:#b76e00;"></span>高風險 / P2</div>
-                <div class="legend-item"><span class="legend-dot" style="background:#1d5fa7;"></span>避難據點 / 待驗證</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#b92318;"></span>災情 / 官方紅色警戒 / P1</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#b76e00;"></span>官方黃色警戒 / P2</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#1d5fa7;"></span>政府避難據點</div>
                 <div class="legend-item"><span class="legend-dot" style="background:#16794c;"></span>可調派資源</div>
             </div>
-            <div class="map-note">空間連線代表案件與資源的候選空間關係，不等同於道路導航結果。</div>
+            <div class="map-note">空間連線代表案件與資源的候選空間關係，不等同於道路導航結果。官方警戒若僅提供行政區層級，地圖位置依官方參考座標呈現。</div>
             """,
             unsafe_allow_html=True,
         )
@@ -1956,7 +2277,7 @@ def page_submit_supply():
                 "district": district, "village": "全區",
                 "location_current": location_current, "lat": lat, "lon": lon,
                 "resource_type": resource_type, "category": category, "item": item, "qty": int(qty),
-                "has_logistics": "具備山區越野挺進能力" if "" in has_logistics else "需車隊協助接駁",
+                "has_logistics": "具備山區越野挺進能力" if "具備" in has_logistics else "需車隊協助接駁",
                 "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
                 "verified_by": user.get("id") if user.get("verified") else "", "raw_text": raw_text, "risk_flag": geo_data.get("risk_flag", ""),
             }
@@ -2373,6 +2694,14 @@ def page_map_pool():
         render_kpi("可用資源量", f"{total_supply_units:,}", "依登錄庫存加總", "info")
     with k6:
         render_kpi("執行中任務", len(in_progress), "已核准、尚未結案", "info")
+
+    official_alerts, official_shelters, _ = render_official_data_panel()
+    official_towns = sorted({a.get("鄉鎮") for a in official_alerts if a.get("鄉鎮")})
+    if official_towns:
+        st.markdown(
+            f"<div class='system-callout'><b>官方警戒區：</b>{'、'.join(official_towns)}。請於調度前核對政府最新警戒資訊與現場路況。</div>",
+            unsafe_allow_html=True,
+        )
 
     map_col, res_col = st.columns([2.05, 1.0], gap="medium")
     with map_col:
@@ -2895,9 +3224,9 @@ def page_company_supply_chatbot():
 
     with tab2:
         st.write("請將企業內部的資源盤點清單或 ERP 系統文字貼於下方，AI 將自動解構陣列並推算經緯度。")
-        bulk_text = st.text_area(" 貼上物資/車隊盤點文字清單", height=150, placeholder="請貼上物資或車隊庫存盤點內容", key="comp_bulk_text")
+        bulk_text = st.text_area(" 貼上物資/車隊盤點文字清單", height=150, placeholder="請貼上物資或車隊庫存盤點內容", key="supply_chat_bulk_text")
         
-        if st.button(" 啟動 Mountain Guard AI 批次解析", type="primary", key="comp_bulk_btn"):
+        if st.button(" 啟動 Mountain Guard AI 批次解析", type="primary", key="supply_chat_bulk_btn"):
             if not bulk_text.strip(): 
                 st.error("請填寫清單內容後再點擊解析！")
             else:
@@ -2923,9 +3252,9 @@ def page_company_supply_chatbot():
         if st.session_state.get("preview_supplies"):
             st.markdown("###  確認 AI 資源拆解結果")
             df_preview = pd.DataFrame(st.session_state.preview_supplies)
-            edited_df = st.data_editor(df_preview, num_rows="dynamic", use_container_width=True, key="comp_bulk_editor")
+            edited_df = st.data_editor(df_preview, num_rows="dynamic", use_container_width=True, key="supply_chat_bulk_editor")
             
-            if st.button(" 確認無誤，正式匯入救援資源池", type="primary", key="comp_bulk_confirm"):
+            if st.button(" 確認無誤，正式匯入救援資源池", type="primary", key="supply_chat_bulk_confirm"):
                 for _, row in edited_df.iterrows():
                     try: row_lat = float(row.get("lat", 23.9))
                     except: row_lat = 23.9
@@ -3130,7 +3459,7 @@ def page_company_supply_center():
                     "district": district, "village": "全區", "location_current": location_current,
                     "lat": geo_data.get("lat", 23.8), "lon": geo_data.get("lon", 121.0),
                     "resource_type": resource_type, "category": category, "item": item, "qty": int(qty),
-                    "has_logistics": "可自行運送" if "" in has_logistics else "需車隊協助",
+                    "has_logistics": "可自行運送" if "自有車隊" in has_logistics else "需車隊協助",
                     "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
                     "verified_by": user.get("id") if user.get("verified") else "", "raw_text": "", "risk_flag": geo_data.get("risk_flag", ""),
                 }
@@ -3786,15 +4115,13 @@ def page_role_dashboard():
                 )
                 st.caption(f"緊急度 {d.get('urgency', 0)}｜路況：{'中斷' if d.get('road_blocked') else '可通行'}")
                 if st.button("前往戰情收件匣", key="dash_go_inbox", use_container_width=True, type="primary"):
-                    st.session_state.nav_page = "收件匣"
-                    st.rerun()
+                    navigate_to("收件匣")
             elif pending_claims:
                 c = pending_claims[0]
                 st.markdown(f"**{c.get('id')}｜待調度簽核**")
                 st.caption(f"需求 {c.get('demand_id')}｜建議數量 {c.get('claim_qty')}")
                 if st.button("前往調度審核", key="dash_go_claim_review", use_container_width=True, type="primary"):
-                    st.session_state.nav_page = "調度審核"
-                    st.rerun()
+                    navigate_to("調度審核")
             else:
                 st.success("目前沒有需要立即處理的待辦。")
             st.markdown("</div></div>", unsafe_allow_html=True)
@@ -3866,13 +4193,11 @@ def page_role_dashboard():
         with action1:
             st.markdown('<div class="panel"><div class="panel-head">我要通報</div><div class="panel-body">先把地點、需求、緊急度講清楚，再交由 AI 整理成結構化案件。</div></div>', unsafe_allow_html=True)
             if st.button("建立山區需求", use_container_width=True, type="primary", key="citizen_create_demand"):
-                st.session_state.nav_page = "通報"
-                st.rerun()
+                navigate_to("需求通報")
         with action2:
             st.markdown('<div class="panel"><div class="panel-head">查看避難與戰情</div><div class="panel-body">查看災情點、可用資源與避難 / 集結據點。</div></div>', unsafe_allow_html=True)
             if st.button("開啟戰情地圖", use_container_width=True, key="citizen_open_map"):
-                st.session_state.nav_page = "山區戰情"
-                st.rerun()
+                navigate_to("山區戰情")
 
         render_situation_map("山區戰情與避難據點", compact="citizen")
 
@@ -4735,7 +5060,7 @@ role = user.get("role")
 role_pages = {
     "government": [
         "戰情總覽",
-                "山區戰情",
+        "山區戰情",
         "收件匣",
         "AI 指揮助理",
         "媒合建議",
@@ -4762,7 +5087,7 @@ role_pages = {
     "admin": [
         "系統總覽",
         "山區戰情",
-                "管理總控台",
+        "管理總控台",
         "媒合建議",
         "物流追蹤",
         "身分與設定",
@@ -4795,16 +5120,20 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### 導覽")
-    st.radio(
-        "系統功能",
-        pages,
-        key="nav_page",
-        label_visibility="collapsed",
-    )
+    st.markdown("#### 功能導覽")
+    current_page = st.session_state.get("nav_page") or pages[0]
+    for idx, page_name in enumerate(pages):
+        is_active = page_name == current_page
+        if st.button(
+            page_name,
+            key=f"nav_btn_{role}_{idx}",
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+        ):
+            navigate_to(page_name)
 
     st.divider()
-    if st.button("登出", use_container_width=True):
+    if st.button("登出系統", key="sidebar_logout", use_container_width=True):
         add_audit("登出系統", user.get("name"))
         st.session_state.current_user = None
         st.session_state.logged_in = False
@@ -4827,6 +5156,9 @@ elif page == "居民總覽":
 
 elif page == "系統總覽":
     page_role_dashboard()
+
+elif page == "管理總控台":
+    page_admin()
 
 elif page == "山區戰情":
     page_map_pool()
