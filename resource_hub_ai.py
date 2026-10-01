@@ -916,7 +916,7 @@ def login_panel():
     st.markdown(
         """
         <div class="login-brand">
-            <div class="page-kicker">RESQ-LINK / SECURE ACCESS</div>
+            <div class="page-kicker">MountainGuard AI / SECURE ACCESS</div>
             <div class="login-brand-title">山區防災協作平台</div>
             <div class="login-brand-sub">將分散災情、空間風險與民間資源整合為可定位、可驗證、可媒合、可調度、可追蹤的應變流程。</div>
         </div>
@@ -966,7 +966,7 @@ def login_panel():
 def sidebar_layout():
     user = get_current_user()
     with st.sidebar:
-        st.title(" ResQ-Link")
+        st.title(" MountainGuard AI")
         if user:
             badge = "" if user.get("verified") else ""
             st.success(f"{badge} {user.get('name')}\n\n{ROLE_LABELS.get(user.get('role'))}")
@@ -5210,7 +5210,7 @@ def page_multimodal():
 # 7. Main App 與系統導覽
 # =========================================================
 st.set_page_config(
-    page_title="ResQ-Link｜南投山區防災協作平台",
+    page_title="MountainGuard AI｜南投山區防災協作平台",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -5270,7 +5270,7 @@ with st.sidebar:
     st.markdown(
         """
         <div style="padding:0.2rem 0 0.8rem 0;">
-            <div style="font-size:0.72rem;letter-spacing:0.12em;color:#6a7785;font-weight:800;">RESQ-LINK</div>
+            <div style="font-size:0.72rem;letter-spacing:0.12em;color:#6a7785;font-weight:800;">MountainGuard AI</div>
             <div style="font-size:1.15rem;color:#10243a;font-weight:900;">山區防災協作平台</div>
         </div>
         """,
