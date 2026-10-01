@@ -1076,19 +1076,19 @@ def inject_professional_css():
 
         /* 增加區塊間留白，降低資訊密度 */
         [data-testid="stVerticalBlock"] {
-            gap: 1.25rem;
+            gap: 0.78rem;
         }
 
         [data-testid="stHorizontalBlock"] {
-            gap: 1.35rem;
+            gap: 1rem;
         }
 
         [data-testid="stVerticalBlockBorderWrapper"] {
-            margin-bottom: 1.35rem !important;
+            margin-bottom: 0.9rem !important;
         }
 
         .panel {
-            margin-bottom: 1.35rem;
+            margin-bottom: 0.85rem;
         }
 
         h1, h2, h3, h4 {
@@ -1126,7 +1126,7 @@ def inject_professional_css():
             border:1px solid var(--border);
             border-radius:14px;
             background:#ffffff;
-            margin-bottom:1.35rem;
+            margin-bottom:0.9rem;
         }
 
         .topbar-title {
@@ -1146,8 +1146,7 @@ def inject_professional_css():
             border:1px solid var(--border);
             border-radius:14px;
             padding:0.9rem 1rem;
-            min-height:122px;
-            margin-bottom:0.45rem;
+            min-height:112px;
             box-shadow: 0 1px 2px rgba(16,36,58,0.03);
         }
 
@@ -1255,7 +1254,7 @@ def inject_professional_css():
             display:flex;
             gap:0.45rem;
             align-items:stretch;
-            margin:0.65rem 0 1.55rem;
+            margin:0.3rem 0 0.9rem;
         }
 
         .step {
@@ -1290,22 +1289,7 @@ def inject_professional_css():
             border-radius:0 10px 10px 0;
             padding:0.72rem 0.85rem;
             color:#254965;
-            margin-bottom:1.45rem;
-        }
-
-        /* 儀表板區塊：讓每一組資訊有明顯呼吸空間 */
-        .dashboard-section-title {
-            margin-top: 1.15rem;
-            margin-bottom: 0.55rem;
-        }
-
-        .dashboard-spacer {
-            height: 0.55rem;
-        }
-
-        /* 原生 border container 也增加內外距，避免卡片黏在一起 */
-        [data-testid="stVerticalBlockBorderWrapper"] > div {
-            padding: 0.15rem;
+            margin-bottom:0.85rem;
         }
 
         .map-note {
