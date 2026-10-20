@@ -294,6 +294,93 @@ def init_session_state():
     if "disasters" not in st.session_state: 
         st.session_state.disasters = []
 
+# =========================================================
+# 複賽展示情境：以下皆為合成案例，非即時官方災情
+# =========================================================
+DEMO_SCENARIOS = [
+    ("仁愛鄉", "霧社", 24.022, 121.131, "道路中斷", "衛星通訊設備", 3, 5, True, 45),
+    ("仁愛鄉", "廬山", 24.022, 121.184, "土石流", "醫療用品", 40, 5, True, 80),
+    ("仁愛鄉", "清境", 24.058, 121.162, "豪雨停電", "發電機", 4, 4, False, 120),
+    ("仁愛鄉", "萬大", 23.974, 121.115, "道路坍方", "飲用水", 150, 4, True, 65),
+    ("信義鄉", "東埔", 23.561, 120.930, "道路中斷", "衛星通訊設備", 2, 5, True, 35),
+    ("信義鄉", "羅娜", 23.616, 120.881, "土石流", "救災工具", 3, 5, True, 50),
+    ("信義鄉", "雙龍", 23.777, 120.943, "橋梁受損", "山地搜救", 6, 5, True, 25),
+    ("信義鄉", "同富", 23.595, 120.887, "強降雨", "食物", 180, 3, False, 180),
+    ("水里鄉", "車埕", 23.833, 120.865, "積淹水", "保暖衣物", 70, 3, False, 90),
+    ("魚池鄉", "日月潭", 23.866, 120.915, "停電", "發電機", 2, 3, False, 150),
+    ("埔里鎮", "桃米", 23.947, 120.931, "道路受阻", "越野車輛(四輪傳動)", 3, 4, False, 75),
+    ("國姓鄉", "北山", 24.046, 120.859, "坡地崩塌", "重型機具(怪手/山貓)", 2, 4, False, 40),
+]
+DEMO_SUPPLIES = [
+    ("埔里救援整備站（模擬）", "埔里鎮", 23.965, 120.967, "衛星通訊設備", 12),
+    ("仁愛山區醫療支援隊（模擬）", "仁愛鄉", 24.023, 121.131, "醫療用品", 150),
+    ("中部緊急電力支援（模擬）", "埔里鎮", 23.961, 120.964, "發電機", 10),
+    ("水里民生物資站（模擬）", "水里鄉", 23.810, 120.852, "飲用水", 650),
+    ("山區通訊備援隊（模擬）", "信義鄉", 23.598, 120.880, "衛星通訊設備", 8),
+    ("信義工程搶修隊（模擬）", "信義鄉", 23.601, 120.886, "救災工具", 16),
+    ("中部山搜志工隊（模擬）", "水里鄉", 23.811, 120.853, "山地搜救", 18),
+    ("魚池食品調度中心（模擬）", "魚池鄉", 23.869, 120.909, "食物", 800),
+    ("埔里保暖物資倉（模擬）", "埔里鎮", 23.970, 120.971, "保暖衣物", 350),
+    ("魚池備用發電站（模擬）", "魚池鄉", 23.873, 120.910, "發電機", 6),
+    ("越野車輛聯防隊（模擬）", "埔里鎮", 23.962, 120.953, "越野車輛(四輪傳動)", 9),
+    ("國姓重機具支援站（模擬）", "國姓鄉", 24.050, 120.860, "重型機具(怪手/山貓)", 7),
+]
+
+def seed_demo_scenarios():
+    """可重複執行、不重複插入；不會覆寫使用者建立的案件。"""
+    now = datetime.now()
+    existing_d = {x.get("id") for x in st.session_state.demands}
+    existing_s = {x.get("id") for x in st.session_state.supplies}
+    existing_dis = {x.get("id") for x in st.session_state.disasters}
+    for i, (town, village, lat, lon, hazard, item, qty, urgency, blocked, people) in enumerate(DEMO_SCENARIOS, 1):
+        did = f"DEMO_D{i:02d}"
+        if did not in existing_d:
+            category = item if item in RESOURCE_TYPES["有形資源"] else item
+            rtype = "無形資源" if item in RESOURCE_TYPES["無形資源"] else "有形資源"
+            st.session_state.demands.append({
+                "id":did, "time":(now-timedelta(minutes=8*i)).strftime("%Y-%m-%d %H:%M"),
+                "source":"複賽模擬案例", "demo":True, "requester_id":"U_GOV_001",
+                "requester_name":"情境模擬通報", "requester_email":"", "district":f"南投縣{town}",
+                "village":village, "location":f"南投縣{town}{village}（模擬定位）", "lat":lat, "lon":lon,
+                "resource_type":rtype, "category":category, "item":item, "qty":qty,
+                "urgency":urgency, "status":"未處理", "matched_provider":"",
+                "verification_status":"verified" if i%3 else "pending", "verified_by":"U_GOV_001" if i%3 else "",
+                "raw_text":f"【複賽模擬】{village}發生{hazard}，需{item} {qty} 單位。",
+                "risk_flag":"", "disaster_type":hazard, "affected_people":f"約 {people} 人",
+                "trapped_group":"居民／長者", "landslide_risk":"高" if blocked else "待評估",
+                "road_blocked":blocked,
+            })
+        if i <= 6 and f"DEMO_EVT{i:02d}" not in existing_dis:
+            st.session_state.disasters.append({
+                "id":f"DEMO_EVT{i:02d}", "time":now_str(), "demo":True,
+                "description":f"【模擬】{town}{village}：{hazard}", "disaster_type":hazard,
+                "lat":lat+0.006, "lon":lon+0.006, "status":"待查證",
+                "urgency_level":"高風險" if urgency>=4 else "注意",
+            })
+    for i, (provider, town, lat, lon, category, qty) in enumerate(DEMO_SUPPLIES, 1):
+        sid=f"DEMO_S{i:02d}"
+        if sid not in existing_s:
+            rtype = "無形資源" if category in RESOURCE_TYPES["無形資源"] else "有形資源"
+            st.session_state.supplies.append({
+                "id":sid, "time":now_str(), "source":"複賽模擬案例", "demo":True,
+                "provider_id":"U_COM_001", "provider":provider, "provider_email":"",
+                "district":f"南投縣{town}", "village":"全區",
+                "location_current":f"南投縣{town}（模擬位置）", "lat":lat, "lon":lon,
+                "resource_type":rtype, "category":category, "item":category,
+                "qty":qty, "status":"可調派", "verification_status":"verified",
+                "verified_by":"U_ADMIN", "raw_text":"【複賽模擬】資源整備完成，可供審核調派。", "risk_flag":"",
+            })
+    st.session_state.demo_seeded = True
+
+def clear_demo_scenarios():
+    for key in ("demands", "supplies", "disasters"):
+        st.session_state[key] = [x for x in st.session_state[key] if not x.get("demo")]
+    demo_d_ids = {f"DEMO_D{i:02d}" for i in range(1, len(DEMO_SCENARIOS)+1)}
+    demo_s_ids = {f"DEMO_S{i:02d}" for i in range(1, len(DEMO_SUPPLIES)+1)}
+    st.session_state.claims = [c for c in st.session_state.claims if c.get("demand_id") not in demo_d_ids and c.get("supply_id") not in demo_s_ids]
+    st.session_state.smart_matches = [m for m in st.session_state.smart_matches if m.get("demand_id") not in demo_d_ids and m.get("supply_id") not in demo_s_ids]
+    st.session_state.demo_seeded = False
+
 def add_audit(action, detail):
     user = st.session_state.current_user or {"name": "未登入", "role": "guest"}
     st.session_state.audit_logs.insert(
@@ -2002,9 +2089,36 @@ def render_situation_map(title="山區戰情與避難地圖", compact=False):
         with c4:
             show_supplies = st.checkbox("可調派資源", value=True, key=f"map_sup_{compact}")
         with c5:
-            show_links = st.checkbox("空間連線", value=True, key=f"map_link_{compact}")
+            show_links = st.checkbox("候選直線（非可通行路線）", value=False, key=f"map_link_{compact}")
+
+        iso_col, sim_col = st.columns([1.2, 1.8])
+        with iso_col:
+            show_isolation = st.checkbox("疑似孤島風險圈", value=True, key=f"map_island_{compact}")
+        with sim_col:
+            isolation_only = st.checkbox("只看道路中斷案件", value=False, key=f"map_island_only_{compact}")
 
         layers = []
+        island_rows = []
+        for d in st.session_state.demands:
+            if not d.get("road_blocked") or d.get("status") not in ("未處理", "部分配對 (尚缺)"):
+                continue
+            try:
+                lat, lon = float(d.get("lat")), float(d.get("lon"))
+            except (TypeError, ValueError):
+                continue
+            if not (22.0 <= lat <= 26.0 and 119.0 <= lon <= 123.0):
+                continue
+            island_rows.append({"lat":lat, "lon":lon,
+                "名稱":f"疑似孤島｜{d.get('village') or d.get('location')}",
+                "類型":"道路中斷通報（未經路網驗證）", "狀態":d.get("status","待查證"),
+                "優先":f"緊急度 {d.get('urgency',0)}/5｜{d.get('affected_people','人數待查')}",
+                "fill":[230,72,39,35], "ring":[235,83,45,210], "radius":2300,
+                "線寬":90})
+        if show_isolation and island_rows:
+            layers.append(pdk.Layer("ScatterplotLayer", data=island_rows,
+                get_position="[lon, lat]", get_fill_color="fill", get_radius="radius",
+                get_line_color="ring", get_line_width="線寬", stroked=True,
+                pickable=True, radius_min_pixels=14, radius_max_pixels=52))
 
         disaster_rows = []
         if show_disasters:
@@ -2029,6 +2143,8 @@ def render_situation_map(title="山區戰情與避難地圖", compact=False):
         if show_demands:
             for d in st.session_state.demands:
                 if int(d.get("qty", 0) or 0) <= 0:
+                    continue
+                if isolation_only and not d.get("road_blocked"):
                     continue
                 if d.get("status") not in ["未處理", "部分配對 (尚缺)", "已完成配對"]:
                     continue
@@ -2253,12 +2369,13 @@ def render_situation_map(title="山區戰情與避難地圖", compact=False):
         st.markdown(
             """
             <div class="legend-row">
+                <div class="legend-item"><span class="legend-dot" style="background:#e6532d;"></span>橘紅透明圈：疑似孤島（通報推估）</div>
                 <div class="legend-item"><span class="legend-dot" style="background:#b92318;"></span>災情 / 官方紅色警戒 / P1</div>
                 <div class="legend-item"><span class="legend-dot" style="background:#b76e00;"></span>官方黃色警戒 / P2</div>
                 <div class="legend-item"><span class="legend-dot" style="background:#1d5fa7;"></span>政府避難據點</div>
                 <div class="legend-item"><span class="legend-dot" style="background:#16794c;"></span>可調派資源</div>
             </div>
-            <div class="map-note">空間連線代表案件與資源的候選空間關係，不等同於道路導航結果。官方警戒若僅提供行政區層級，地圖位置依官方參考座標呈現。</div>
+            <div class="map-note">疑似孤島圈為視覺提示，並非實際封閉範圍、可通行路線或政府核定警戒區。空間連線僅代表幾何候選關係，不等同於道路導航結果。官方警戒若僅提供行政區層級，地圖位置依官方參考座標呈現。</div>
             """,
             unsafe_allow_html=True,
         )
@@ -2829,6 +2946,17 @@ def page_gov_review():
 
 
 def page_map_pool():
+    with st.expander("複賽展示控制台｜模擬資料（非即時災情）", expanded=False):
+        st.caption("一鍵載入 12 筆模擬需求、12 筆模擬支援、6 筆模擬災情。資料僅供展示，不代表真實事件或官方警戒。")
+        load_col, clear_col = st.columns(2)
+        with load_col:
+            if st.button("載入複賽展示案例", key="mg_demo_load", type="primary", use_container_width=True):
+                seed_demo_scenarios()
+                st.rerun()
+        with clear_col:
+            if st.button("移除展示案例", key="mg_demo_clear", use_container_width=True):
+                clear_demo_scenarios()
+                st.rerun()
     render_page_header(
         "LIVE SITUATION",
         "山區戰情與避難地圖",
@@ -2848,6 +2976,24 @@ def page_map_pool():
         c for c in st.session_state.claims
         if c.get("status") == "approved" and c.get("fulfillment_status") != "已完成(收妥)"
     ]
+
+    island_demands = [d for d in active_demands if d.get("road_blocked")]
+    if island_demands:
+        st.markdown("### 疑似孤島事件｜優先應變")
+        st.caption("依道路中斷通報篩選，尚未經道路網連通性或官方封路資訊驗證；以下模擬案例均已標記。")
+        island_sorted = sorted(island_demands, key=lambda d:int(d.get("urgency",0) or 0), reverse=True)
+        a, b, c = st.columns(3)
+        a.metric("疑似孤島通報", len(island_demands))
+        b.metric("P1 高危急", sum(priority_level(d)[0]=="P1" for d in island_demands))
+        c.metric("待驗證孤島通報", sum(d.get("verification_status")!="verified" for d in island_demands))
+        with st.expander("查看孤島事件與建議資源", expanded=False):
+            supply_list = stats["active_supplies"]
+            for d in island_sorted[:10]:
+                same_cat = [x for x in supply_list if x.get("category")==d.get("category")]
+                suggestions = "、".join(x.get("provider", "支援單位") for x in same_cat[:2]) or "尚無同類別可用資源，需人工協調"
+                st.markdown(f"**{d.get('id')}｜{d.get('village') or d.get('location')}**｜緊急度 {d.get('urgency',0)}/5｜需求：{d.get('item')} × {d.get('qty')}  ")
+                st.caption(f"候選同類資源：{suggestions}（僅分類篩選，尚未確認可達性或派遣）")
+                st.divider()
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     with k1:
