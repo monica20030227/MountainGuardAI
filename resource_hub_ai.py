@@ -1779,7 +1779,9 @@ def fetch_official_json(url):
 
 @st.cache_data(ttl=180, show_spinner=False)
 def fetch_nantou_shelter_api(limit=1000):
-    """南投縣政府 CKAN Data API：取得目前公開的避難收容所資料。"""
+    """選用來源；目前本機無法穩定連線，預設不呼叫以免拖慢地圖。"""
+    if os.getenv("ENABLE_NANTOU_CKAN", "0") != "1":
+        return [], "已停用（使用消防署官方避難所點位）"
     try:
         query = urllib.parse.urlencode({
             "resource_id": NANTOU_SHELTER_RESOURCE_ID,
@@ -1914,8 +1916,10 @@ def _build_shelter_coordinate_index(rows):
 
 def fetch_official_shelters():
     """以南投縣政府 Data API 為主；消防署官方 CSV 用來補上經緯度。"""
-    api_rows, api_err = fetch_nantou_shelter_api()
     coord_rows, coord_err = fetch_official_shelter_csv(OFFICIAL_SHELTER_CSV_URL)
+    api_rows, api_err = [], ""
+    if os.getenv("ENABLE_NANTOU_CKAN", "0") == "1":
+        api_rows, api_err = fetch_nantou_shelter_api()
     coord_index = _build_shelter_coordinate_index(coord_rows)
 
     shelters = []
@@ -1982,19 +1986,8 @@ def fetch_official_shelters():
 
 
 def check_wra_api():
-    """檢查水利署免驗證資料服務是否可連線。"""
-    start = time.perf_counter()
-    try:
-        req = urllib.request.Request(
-            WRA_PRECIP_META_URL,
-            headers={"User-Agent": "ResQ-Link/1.0", "Accept": "application/json,text/plain,*/*"},
-        )
-        with _urlopen_government(req, timeout=8) as response:
-            response.read(128)
-            status = getattr(response, "status", 200)
-        return {"ok": True, "status": status, "latency_ms": round((time.perf_counter() - start) * 1000)}
-    except Exception as exc:
-        return {"ok": False, "status": "—", "latency_ms": round((time.perf_counter() - start) * 1000), "error": str(exc)}
+    """水利署原先的端點回傳 HTTP 400，停用無效健康檢查。"""
+    return {"ok": False, "status": "未啟用", "error": "尚未設定經實測可用的水利署資料端點"}
 
 
 def render_official_data_panel():
@@ -2015,8 +2008,8 @@ def render_official_data_panel():
     with c3:
         render_kpi("南投官方避難據點", len(shelters), "消防署公開點位", "info")
     with c4:
-        online_sources = sum([not bool(alert_err), not bool(shelter_err), wra_health.get("ok", False)])
-        render_kpi("政府資料來源", f"{online_sources}/3", "警戒／避難／水文 API", "success" if online_sources == 3 else "warning")
+        online_sources = sum([not bool(alert_err), not bool(shelter_err), not bool(ref_err)])
+        render_kpi("政府資料來源", f"{online_sources}/3", "警戒／避難／崩塌參考資料", "success" if online_sources == 3 else "warning")
 
     refresh_col, _ = st.columns([1, 4])
     with refresh_col:
@@ -2036,12 +2029,11 @@ def render_official_data_panel():
 
         api_c1, api_c2, api_c3 = st.columns(3)
         with api_c1:
-            nt_rows, nt_err = fetch_nantou_shelter_api()
-            st.caption("南投縣政府避難 Data API：正常" if not nt_err else f"南投縣政府避難 Data API：{nt_err}")
+            st.caption("消防署避難所座標：正常" if not shelter_err else f"消防署避難所座標：{shelter_err}")
         with api_c2:
             st.caption("農業部水保署警戒 API：正常" if not alert_err else f"農業部水保署警戒 API：{alert_err}")
         with api_c3:
-            st.caption("經濟部水利署 API：正常" if wra_health.get("ok") else f"經濟部水利署 API：{wra_health.get('error', '無法連線')}")
+            st.caption("大規模崩塌參考資料：正常" if not ref_err else f"大規模崩塌參考資料：{ref_err}")
 
         left, right = st.columns(2, gap="medium")
         with left:
@@ -2049,7 +2041,7 @@ def render_official_data_panel():
             if alerts:
                 st.dataframe(pd.DataFrame(alerts), hide_index=True, use_container_width=True)
             else:
-                st.info("目前官方 API 未回傳南投縣警戒案件。")
+                st.info("官方警戒 API 連線正常，目前沒有南投縣警戒案件。" if not alert_err else "官方警戒資料暫時無法取得，請稍後重試。")
 
         with right:
             st.markdown("#### 南投縣避難收容處所")
@@ -2063,8 +2055,8 @@ def render_official_data_panel():
                 st.info("目前無法取得南投縣官方避難據點資料。")
 
         st.caption(
-            "資料來源：農業部農村發展及水土保持署警戒 API、南投縣政府開放資料平台避難收容 Data API、"
-            "內政部消防署避難收容座標資料、經濟部水利署水文 API。來源資料以快取方式更新。"
+            "資料來源：農業部農村發展及水土保持署即時警戒與崩塌參考資料、內政部消防署避難收容點位。"
+            "官方警戒不代表災害已發生；崩塌參考點也不是警戒事件精確位置。"
         )
 
     return alerts, shelters, ref_points
@@ -2250,46 +2242,8 @@ def render_situation_map(title="山區戰情與避難地圖", compact=False):
                     )
                 )
 
-        # 官方警戒：目前公開警戒 API 為行政區／警戒點資訊，優先以官方參考座標建立地圖層。
-        if show_disasters and official_alerts and official_ref_points:
-            ref_by_town = {}
-            for ref in official_ref_points:
-                ref_by_town.setdefault(ref.get("鄉鎮", ""), ref)
-
-            official_rows = []
-            for alert in official_alerts:
-                ref = ref_by_town.get(alert.get("鄉鎮", ""))
-                if not ref:
-                    continue
-                level_color = [185, 35, 24, 235] if alert.get("警戒") == "紅色警戒" else [183, 110, 0, 230]
-                official_rows.append({
-                    "lat": ref.get("lat"),
-                    "lon": ref.get("lon"),
-                    "名稱": f"官方{alert.get('類型')}警戒｜{alert.get('鄉鎮')}",
-                    "類型": "政府官方警戒",
-                    "狀態": alert.get("警戒"),
-                    "優先": f"{alert.get('警戒')}｜{alert.get('村里') or '行政區級'}",
-                    "fill": level_color,
-                    "radius": 780 if alert.get("警戒") == "紅色警戒" else 620,
-                    "ring": [255, 255, 255, 240],
-                    "線寬": 150,
-                })
-            if official_rows:
-                layers.append(
-                    pdk.Layer(
-                        "ScatterplotLayer",
-                        data=official_rows,
-                        get_position="[lon, lat]",
-                        get_fill_color="fill",
-                        get_radius="radius",
-                        get_line_color="ring",
-                        get_line_width="線寬",
-                        stroked=True,
-                        pickable=True,
-                        radius_min_pixels=6,
-                        radius_max_pixels=24,
-                    )
-                )
+        # 官方警戒為行政區級資訊；不將同鄉鎮的崩塌參考點冒充警戒座標。
+        # 警戒詳細資訊於「官方防災資料」表格中提供。
 
         if disaster_rows:
             layers.append(
