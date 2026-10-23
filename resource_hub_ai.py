@@ -3765,156 +3765,124 @@ def page_company_supply_center():
         else:
             st.info("目前尚無供給紀錄。")
 
+def render_company_claim_form(user, location_key):
+    """在觸發認領的分頁內直接呈現表單，避免表單被放在所有 tabs 之後。"""
+    demand_id = st.session_state.get("claiming_demand_id")
+    if not demand_id:
+        return
+    demand = next((d for d in st.session_state.demands if d.get("id") == demand_id), None)
+    if not demand:
+        st.warning("這筆需求已不存在，請重新選擇。")
+        st.session_state.claiming_demand_id = None
+        return
+    st.markdown("### 認領申請")
+    st.info(f"已選擇需求：{demand.get('item', '未命名')}｜{demand.get('location', '')}｜尚需 {demand.get('qty', 0)} 單位")
+    supplies = [s for s in st.session_state.supplies
+                if s.get("provider_id") == user.get("id")
+                and s.get("status") in ("可調派", "可調派 (有剩餘)")
+                and int(s.get("qty", 0) or 0) > 0]
+    if not supplies:
+        st.warning("目前沒有可用的企業庫存。請先到「企業供給中心」登錄物資，再返回認領。")
+        c1, c2 = st.columns(2)
+        if c1.button("前往企業供給中心", key=f"claim_supply_{location_key}"):
+            st.session_state.claiming_demand_id = None
+            navigate_to("企業供給中心")
+        if c2.button("取消認領", key=f"claim_cancel_empty_{location_key}"):
+            st.session_state.claiming_demand_id = None
+            st.rerun()
+        return
+    with st.form(key=f"company_claim_form_{location_key}_{demand_id}"):
+        selected_id = st.selectbox("選擇提供的物資／救援資源", [s["id"] for s in supplies],
+                                   format_func=lambda sid: next(f"{x.get('item')}（可用 {x.get('qty')} 單位）" for x in supplies if x['id'] == sid))
+        supply = next(x for x in supplies if x["id"] == selected_id)
+        maximum = min(int(demand.get("qty", 0) or 0), int(supply.get("qty", 0) or 0))
+        if maximum <= 0:
+            st.warning("需求或庫存數量不足，無法提交。")
+            return
+        quantity = st.number_input("認領數量", min_value=1, max_value=maximum, value=maximum, step=1)
+        note = st.text_area("補充說明（選填）", placeholder="可配送時間、車輛、運送限制等")
+        col_submit, col_cancel = st.columns(2)
+        submitted = col_submit.form_submit_button("送出認領申請", type="primary", use_container_width=True)
+        cancelled = col_cancel.form_submit_button("取消", use_container_width=True)
+    if cancelled:
+        st.session_state.claiming_demand_id = None
+        st.rerun()
+    if submitted:
+        if any(c.get("demand_id") == demand_id and c.get("supply_id") == selected_id
+               and c.get("claimant_id") == user.get("id") and c.get("status") == "pending_gov_review"
+               for c in st.session_state.claims):
+            st.warning("這筆需求與物資已有待政府審核的申請，請勿重複送出。")
+            return
+        claim = {
+            "id": make_id("C"), "time": now_str(), "demand_id": demand_id,
+            "supply_id": selected_id, "claimant_id": user.get("id"),
+            "claimant_name": user.get("name"), "claimant_role": user.get("role"),
+            "claim_qty": int(quantity), "status": "pending_gov_review",
+            "match_score": None, "match_reason": "企業提出認領，等待政府人工審核",
+            "note": note, "reviewer": "", "review_note": "", "review_time": ""
+        }
+        st.session_state.claims.insert(0, claim)
+        st.session_state.claiming_demand_id = None
+        st.session_state.claim_success_message = f"認領申請 {claim['id']} 已送出，等待政府審核。"
+        add_notification(f"企業認領申請 {claim['id']} 待政府審核", "claim")
+        add_audit("企業提出認領", f"{claim['id']} / 需求 {demand_id} / 資源 {selected_id} / 數量 {quantity}")
+        st.rerun()
+
+
 def page_company_claim_center():
     user = get_current_user()
-    st.title(" Mountain Guard AI - 企業物資認領中心")
-    st.caption("運用 AI 與風險評估技術，快速媒合企業物資能量至南投山區受災孤島，建立韌性協作機制。")
-    
-    tab1, tab2, tab3 = st.tabs([" AI 災情需求檢索", " 依南投風險分級瀏覽", "⏳ 認領與配送進度"])
-    
-    # ==========================================
-    # Tab 1: AI 災情需求檢索 (結合南投地理與孤島情境)
-    # ==========================================
-    with tab1:
-        st.info(" 提示：您可以直接詢問 AI 想尋找的南投特定災區、資源類型或風險條件。")
-        
-        search_query = st.text_input(" 對話式搜尋山區需求：", placeholder="請輸入欲搜尋的地區、需求類型或風險條件")
-        if st.button(" Mountain Guard AI 智能檢索", type="primary"):
-            if not search_query:
-                st.warning("請輸入搜尋條件。")
-            else:
-                with st.spinner("AI 正在分析您的條件並比對南投山區災情庫..."):
-                    # 提示詞微調：加入南投鄉鎮（仁愛、信義、水里等）的地理脈絡解析
-                    prompt = f"請從使用者的搜尋『{search_query}』中，萃取出他想找的南投『地區鄉鎮(district)』與『物資關鍵字(item)』。回傳 JSON，若無則填空字串。格式：{{\"district\": \"\", \"item\": \"\"}}"
-                    try:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-                        res = client.chat.completions.create(model="openai/gpt-oss-120b", messages=[{"role": "user", "content": prompt}], temperature=0.0)
-                        raw_output = res.choices[0].message.content
-                        start_idx, end_idx = raw_output.find("{"), raw_output.rfind("}")
-                        filter_cond = json.loads(raw_output[start_idx:end_idx+1]) if start_idx != -1 else {"district": "", "item": ""}
-                    except:
-                        filter_cond = {"district": "", "item": search_query} # 降級處理
-                        
-                    target_district = filter_cond.get("district", "")
-                    target_item = filter_cond.get("item", "")
-                    
-                    matched_demands = []
-                    for d in st.session_state.demands:
-                        if d.get("verification_status") != "verified" or d.get("status") not in ["未處理", "部分配對 (尚缺)"]:
-                            continue
-                        
-                        match = True
-                        if target_district and target_district not in d.get("district", ""): match = False
-                        if target_item and target_item not in d.get("item", "") and target_item not in d.get("raw_text", ""): match = False
-                        if match: matched_demands.append(d)
-                        
-                    st.success(f" AI 檢索完成！為您找到 {len(matched_demands)} 筆符合【{target_district if target_district else '全區'} / {target_item if target_item else '所有物資'}】的山區韌性需求。")
-                    
-                    if matched_demands:
-                        for d in matched_demands:
-                            with st.container(border=True):
-                                col_a, col_b = st.columns([3, 1])
-                                with col_a:
-                                    st.markdown(f"#### {d['item']} (需 {d['qty']} 單位)")
-                                    # 結合計畫書的「風險評估模組」：呈現地區、緊急度、土石流與道路中斷風險
-                                    road_badge = " 道路中斷(孤島效應)" if d.get("road_blocked", False) else " 交通可通行"
-                                    risk_level = f" 風險分級: {d.get('risk_grade', '中')}"
-                                    st.write(f" {d['location']} | {risk_level} | {road_badge} | {get_status_badge(d['status'])}", unsafe_allow_html=True)
-                                    if d.get("vulnerable_groups"):
-                                        st.caption(f" 受困族群特別註記: {d.get('vulnerable_groups')}")
-                                with col_b:
-                                    st.write("")
-                                    if st.button("我要認領", key=f"ai_claim_btn_{d['id']}", use_container_width=True):
-                                        st.session_state.claiming_demand_id = d["id"]
-                                        st.rerun()
-
-    # ==========================================
-    # Tab 2: 手動瀏覽與認領 (融入風險評估指標)
-    # ==========================================
-    with tab2:
-        st.subheader(" 南投縣高風險與孤島區域需求總覽")
-        st.caption("系統已依據「土石流風險、道路中斷狀況、受困族群」完成風險分級，請依企業物資與車隊能量進行認領。")
-        
-        public_demands = [d for d in st.session_state.demands if d.get("verification_status") == "verified" and d.get("status") in ["未處理", "部分配對 (尚缺)"]]
-        if not public_demands:
-            st.info("目前南投山區沒有待處理的公開物資需求。")
+    st.title("Mountain Guard AI - 企業物資認領中心")
+    st.caption("查看已驗證需求、提出物資認領申請，並追蹤政府審核與配送狀態。")
+    if st.session_state.get("claim_success_message"):
+        st.success(st.session_state.pop("claim_success_message"))
+    tab_search, tab_browse, tab_progress = st.tabs(["需求搜尋", "依風險分級瀏覽", "認領與配送進度"])
+    eligible = [d for d in st.session_state.demands
+                if d.get("verification_status") == "verified"
+                and d.get("status") in ("未處理", "部分配對 (尚缺)")
+                and int(d.get("qty", 0) or 0) > 0]
+    with tab_search:
+        query = st.text_input("搜尋鄉鎮、需求品項或災害資訊", key="company_claim_search")
+        matches = [d for d in eligible if not query or any(query.lower() in str(d.get(k, "")).lower()
+                     for k in ("district", "location", "item", "raw_text", "disaster_type"))]
+        st.caption(f"找到 {len(matches)} 筆可認領需求")
+        for d in matches:
+            with st.container(border=True):
+                left, right = st.columns([4, 1])
+                left.markdown(f"**{d.get('item')}（需 {d.get('qty')} 單位）**")
+                left.caption(f"{d.get('location', '')}｜優先級 {d.get('urgency', 3)}")
+                if right.button("我要認領", key=f"search_claim_{d['id']}", use_container_width=True):
+                    st.session_state.claiming_demand_id = d["id"]
+                    st.session_state.claim_tab_source = "search"
+                    st.rerun()
+        if st.session_state.get("claim_tab_source") == "search":
+            render_company_claim_form(user, "search")
+    with tab_browse:
+        st.subheader("南投縣高風險與孤島區域需求總覽")
+        st.caption("以下為平台已驗證的通報需求，並非政府 API 自動認定的實際災情。")
+        for d in sorted(eligible, key=lambda x: int(x.get("urgency", 0) or 0), reverse=True):
+            with st.container(border=True):
+                left, right = st.columns([4, 1])
+                left.markdown(f"**【{d.get('district', '')}】{d.get('item')}（需 {d.get('qty')} 單位）**")
+                road = "道路中斷待查證" if d.get("road_blocked") else "道路狀態待確認"
+                left.caption(f"{d.get('location', '')}｜{road}｜優先級 {d.get('urgency', 3)}")
+                if right.button("我要認領", key=f"browse_claim_{d['id']}", use_container_width=True):
+                    st.session_state.claiming_demand_id = d["id"]
+                    st.session_state.claim_tab_source = "browse"
+                    st.rerun()
+        if not eligible:
+            st.info("目前沒有可公開認領的已驗證需求。")
+        if st.session_state.get("claim_tab_source") == "browse":
+            render_company_claim_form(user, "browse")
+    with tab_progress:
+        claims = [c for c in st.session_state.claims if c.get("claimant_id") == user.get("id")]
+        if not claims:
+            st.info("目前尚無認領申請。")
         else:
-            for d in public_demands:
-                with st.container(border=True):
-                    col_c, col_d = st.columns([3, 1])
-                    with col_c:
-                        # 顯著標示核心計畫書中提到的高風險鄉鎮（如仁愛鄉、信義鄉）
-                        st.markdown(f"**【{d.get('district', '南投縣')}】{d['item']} (需 {d['qty']} 單位)**")
-                        # 呈現計畫書「風險評估模組」的核心要素：土石流風險、道路中斷
-                        landslide_str = f"️ 土石流風險: {d.get('landslide_risk', '高')}"
-                        road_str = " 道路坍方(交通中斷)" if d.get("road_blocked", True) else " 車輛可達"
-                        st.caption(f" 位置: {d['location']} | {landslide_str} | {road_str} | 優先級: {d.get('urgency', 3)}⭐")
-                    with col_d:
-                        st.write("")
-                        if st.button("我要認領", key=f"man_claim_btn_{d['id']}", use_container_width=True):
-                            st.session_state.claiming_demand_id = d["id"]
-                            st.rerun()
-
-    # ==========================================
-    # 處理彈出的認領表單 (智慧資源媒合：支援民間捐贈、志工與車隊整合)
-    # ==========================================
-    if st.session_state.get("claiming_demand_id"):
-        d_id = st.session_state.claiming_demand_id
-        target_d = next((x for x in st.session_state.demands if x["id"] == d_id), None)
-        if target_d:
-            st.markdown("---")
-            st.subheader(f" 啟動智慧資源媒合：{target_d['item']}")
-            my_avail_supplies = [s for s in st.session_state.supplies if s.get("provider_id") == user.get("id") and s.get("status") == "可調派"]
-            
-            if not my_avail_supplies:
-                st.error("您目前沒有『可調派』的庫存或救援能量！請先至【 企業供給中心】建立您的物資或四輪驅動救援車隊數據。")
-                if st.button("取消"):
-                    st.session_state.claiming_demand_id = None; st.rerun()
-            else:
-                # 結合計畫書的「智慧資源媒合模組」：不只能媒合物資，也能選擇救援車隊或志工載具
-                supply_options = {s["id"]: f"{s['item']} (可用餘額: {s['qty']}) - 目前位置: {s['location_current']}" for s in my_avail_supplies}
-                
-                with st.form("comp_claim_form"):
-                    sel_supply_id = st.selectbox("請選擇您要調派哪一筆物資/車隊支援此山區孤島？", list(supply_options.keys()), format_func=lambda x: supply_options[x])
-                    sel_supply = next((x for x in my_avail_supplies if x["id"] == sel_supply_id), None)
-                    max_q = min(target_d.get("qty", 1), sel_supply.get("qty", 1)) if sel_supply else 1
-                    
-                    claim_qty = st.number_input("預計認領/投入數量", min_value=1, max_value=max_q, value=max_q)
-                    
-                    # 配合計畫書：資源智慧配對評估
-                    st.caption(" 系統提示：本平台 AI 將自動計算最佳配送方案（如道路中斷時改以空投、空拍無人機或高底盤救援車隊對接）。")
-                    
-                    submit_claim = st.form_submit_button(" 送出智慧媒合申請", type="primary")
-                    
-                    if submit_claim:
-                        c_id = make_id("C")
-                        # AI 自動推薦最佳配送方案分數
-                        claim = {
-                            "id": c_id, "time": now_str(), "demand_id": target_d["id"], "supply_id": sel_supply_id,
-                            "claimant_id": user.get("id"), "claimant_name": user.get("name"), "claim_qty": claim_qty,
-                            "status": "pending_gov_review", "match_score": 92, 
-                            "match_reason": f"成功媒合！考量該區{ '道路坍方' if target_d.get('road_blocked', True) else '交通尚可' }，AI 建議採取最佳配送路徑。"
-                        }
-                        st.session_state.claims.append(claim)
-                        st.session_state.claiming_demand_id = None
-                        st.success(" 韌性資源媒合申請已送出！待南投應變指揮中心審核通過後，即可依最佳方案出貨。")
-                        time.sleep(1.5); st.rerun()
-
-    # ==========================================
-    # Tab 3: 我的認領進度
-    # ==========================================
-    with tab3:
-        my_claims = [c for c in st.session_state.claims if c.get("claimant_id") == user.get("id")]
-        if my_claims:
-            df = pd.DataFrame(my_claims)
-            # 重新命名欄位，讓報告書的呈現更為直觀專業
-            df_display = df[["id", "time", "demand_id", "claim_qty", "match_score", "match_reason", "status"]].copy()
-            df_display.columns = ["媒合編號", "申請時間", "需求編號", "認領數量", "AI 配對度(%)", "智慧配送建議", "審核狀態"]
-            st.dataframe(df_display, hide_index=True, use_container_width=True)
-        else:
-            st.info("目前尚無山區物資認領的媒合申請紀錄。")
-
+            rows = [{"申請編號": c.get("id"), "申請時間": c.get("time"),
+                     "需求編號": c.get("demand_id"), "認領數量": c.get("claim_qty"),
+                     "審核狀態": CLAIM_STATUS.get(c.get("status"), c.get("status")),
+                     "審核備註": c.get("review_note", "")} for c in claims]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 def page_company_logistics_esg_center():
     # 調整標題，彰顯計畫書的「提升山區防災韌性」與「SDGs 預計效益」
