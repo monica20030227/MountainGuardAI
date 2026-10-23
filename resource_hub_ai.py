@@ -2808,19 +2808,26 @@ def page_gov_review():
                             st.info(f" **民間擬定挺進計畫：** {c.get('note')}")
                         
                         st.markdown("#####  MountainGuard AI 運能匹配評估")
-                        score = c.get("match_score", 0)
-                        
-                        # 動態顏色與情境警告（完美契合山路中斷、土石流警示等動態）
-                        if score >= 80:
-                            st.progress(score / 100, text=f" AI 調度適配分數：{score} / 100")
-                            st.caption(" **AI 安全分析**：該隊伍配備高底盤 4WD 越野車或空投運能，且與災區距離合理，可有效克服山路崩塌點。")
-                        elif score >= 50:
-                            st.progress(score / 100, text=f" AI 調度適配分數：{score} / 100")
-                            st.warning("️ **AI 安全提示**：目標災區周圍有泥濘或落石紀錄，該運具挺進能力尚可，建議要求駕駛攜帶無線電與絞盤。")
+                        # 企業主動認領可能尚未計算媒合分數；不得將 None 與整數比較。
+                        raw_score = c.get("match_score")
+                        try:
+                            score = float(raw_score) if raw_score is not None and str(raw_score).strip() else None
+                            if score is not None and not (0 <= score <= 100):
+                                score = None
+                        except (TypeError, ValueError, OverflowError):
+                            score = None
+
+                        if score is None:
+                            st.info("此筆認領申請尚無可用的媒合評分，請依需求、庫存、運輸條件及現場資訊進行人工審核。")
                         else:
-                            st.progress(score / 100, text=f" AI 調度適配分數：{score} / 100")
-                            st.error(" **AI 重大安全警告**：目標區已呈現典型道路中斷孤島效應，申請人可能缺乏四輪傳動越野運具。若非無人機投遞，車輛極易受困！")
-                        
+                            st.progress(score / 100, text=f"媒合適配分數：{score:g} / 100")
+                            if score >= 80:
+                                st.success("媒合適配程度較高；仍需確認實際道路通行與運輸安全。")
+                            elif score >= 50:
+                                st.warning("媒合適配程度中等；請進一步核對資源規格及配送條件。")
+                            else:
+                                st.warning("媒合適配程度偏低；建議確認是否有其他更合適的資源。")
+
                         # 展開 AI 的多維度推理邏輯，提供官員上下文透明度
                         with st.expander(" 檢視 AI 語意媒合詳解與 GIS 土石流疊加報告"):
                             st.markdown(f"**【媒合推論報告】**\n{c.get('match_reason', '系統已自動分析兩端距離、品項關鍵字相符度及運具山道克服能力。')}")
